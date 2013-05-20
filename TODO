@@ -1,3 +1,4 @@
-Check cudaMemcpyAsync with a simple case
+Check cudaMemcpyAsync with a simple case 						[Done]
+Check wheather cudaMemcpyAsync(Process 2) overlaps with kernel execution (Process 1)	[Done]
 
 Device memory object management

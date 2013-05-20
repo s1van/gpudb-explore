@@ -17,6 +17,9 @@
 
 #include "gdaemon.h"
 
+static cudaError_t (*nv_cudaStreamCreate)(cudaStream_t *) = NULL;	
+static cudaStream_t mystream = NULL;
+
 static void show_stackframe() {
   void *trace[32];
   char **messages = (char **)NULL;
@@ -36,6 +39,17 @@ cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, enum cudaMemcpy
         static cudaError_t (*nv_cudaMemcpy)(void *, const void *, size_t, enum cudaMemcpyKind, cudaStream_t stream) = NULL;
         cudaError_t ret;
         struct timeval t;
+        
+	if(!nv_cudaStreamCreate) {
+                nv_cudaStreamCreate = dlsym(RTLD_NEXT, "cudaStreamCreate");
+                if(!nv_cudaStreamCreate) {
+                        fprintf(stderr, "failed to find symbol cudaStreamCreate : %s\n", dlerror());
+                        return cudaErrorSharedObjectSymbolNotFound;
+                }
+	}	
+	
+	if(!mystream)
+		ret = nv_cudaStreamCreate(&mystream);
 
         if(!nv_cudaMemcpy) {
                 nv_cudaMemcpy = dlsym(RTLD_NEXT, "cudaMemcpyAsync");
@@ -48,7 +62,7 @@ cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, enum cudaMemcpy
         //gettimeofday(&t, NULL);
 	//printf("[gvm] %lf intercepting cudaMemcpy\n", t.tv_sec + t.tv_usec / 1000000.0);
 
-        ret = nv_cudaMemcpy(dst, src, count, kind, 0);
+        ret = nv_cudaMemcpy(dst, src, count, kind, mystream);
 
         //gettimeofday(&t, NULL);
         //printf("[gvm] %lf intercepted cudaMemcpy( %lx %lx %ld %d ) = %d\n", t.tv_sec + t.tv_usec / 1000000.0, (unsigned long)dst, (unsigned long)src, count, kind, (int)ret);
@@ -59,12 +73,10 @@ cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, enum cudaMemcpy
 cudaError_t cudaConfigureCall(dim3 gridDim, dim3 blockDim, size_t sharedMem, cudaStream_t stream)
 {
         static cudaError_t (*nv_cudaConfigureCall)(dim3, dim3, size_t, cudaStream_t) = NULL;
-        static cudaError_t (*nv_cudaStreamCreate)(cudaStream_t *) = NULL;
-	static cudaStream_t mystream = NULL;
         cudaError_t ret;
         struct timeval t;
 
-        if(!nv_cudaConfigureCall) {
+        if(!nv_cudaStreamCreate) {
                 nv_cudaStreamCreate = dlsym(RTLD_NEXT, "cudaStreamCreate");
                 if(!nv_cudaStreamCreate) {
                         fprintf(stderr, "failed to find symbol cudaStreamCreate : %s\n", dlerror());

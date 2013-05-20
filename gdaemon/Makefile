@@ -19,5 +19,18 @@ run_test_async: test_async async
 	time ./test_async
 	time LD_PRELOAD=`pwd`/ic_async.so ./test_async
 	
+test_async2 : test_async2a.cu test_async2b.cu
+	nvcc -I${CUDA_SDK_PATH}/include -I/home/syma/etc/CUDA_5.0_SAMPLES/common/inc test_async2a.cu -arch=sm_20 -o test_async2a
+	nvcc -I${CUDA_SDK_PATH}/include -I/home/syma/etc/CUDA_5.0_SAMPLES/common/inc test_async2b.cu -arch=sm_20 -o test_async2b
+
+run_test_async2: test_async2 async stream
+	time ./test_async2b
+	echo -e "\n\n"
+	./test_async2a &
+	time ./test_async2b
+	echo -e "\n\n"
+	./test_async2a &
+	time LD_PRELOAD=`pwd`/ic_stream.so ./test_async2b
+	
 clean:
-	rm -f test gdaemon.so ic_async.so ic_stream.so test_async
+	rm -f test gdaemon.so ic_async.so ic_stream.so test_async test_async2a test_async2b
