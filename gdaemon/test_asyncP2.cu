@@ -108,59 +108,34 @@ static struct timeval tv0, tv1, tv2;
 void MatMul(const Matrix A, const Matrix B, Matrix C)
 {
 	// Load A and B to device memory
-	Matrix d_A,d_B,d_C;
+	Matrix d_A;
 	static cudaStream_t stream = NULL;
 
-	size_t size = A.width * A.height * sizeof(float);
+	size_t size = A.width * A.height * sizeof(float) * 48;
 
 	d_A.width =A.width; d_A.height = A.width;
-	d_B.width = B.width; d_B.height = B.height;
-	d_C.width = C.width; d_C.height = C.height;
 	
 
 	cudaStreamCreate(&stream);
 	gettimeofday(&tv1, NULL);
 	cudaMalloc((void**)&d_A.elements, size);
-	cudaMalloc((void**)&d_B.elements, size);
-	cudaMalloc((void**)&d_C.elements, size);
 	gettimeofday(&tv2, NULL);
 	printf("P2 cudaMalloc takes %ld micro seconds\n", (tv2.tv_sec - tv1.tv_sec) * 1000000L + (tv2.tv_usec - tv1.tv_usec));
 	sleep(2);
 
 	gettimeofday(&tv1, NULL);
-	//cudaMemcpyAsync(d_A.elements,A.elements, size, cudaMemcpyHostToDevice, stream);
-	//cudaMemcpyAsync(d_B.elements, B.elements, size, cudaMemcpyHostToDevice, stream);
-	cudaMemcpy(d_A.elements,A.elements, size, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_B.elements, B.elements, size, cudaMemcpyHostToDevice);
-
-	// Allocate C in device memory
-
-	size = C.width * C.height * sizeof(float);
+	for (int rep = 0; rep < 1024; rep++) 
+		cudaMemcpy(d_A.elements,A.elements, size, cudaMemcpyHostToDevice);
 
 
-	// Invoke kernel
-	//dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
-	//dim3 dimGrid(B.width / dimBlock.x, A.height / dimBlock.y);
-
-	//MatMulKernel<<<dimGrid, dimBlock>>>(d_A, d_B, d_C);
-	
-	//double x;
-	//for (int i=0;i<size*48;i++)
-	//	x = x*x - i;
-
-
-	cudaThreadSynchronize();
-	cudaMemcpy(C.elements, d_C.elements, size,cudaMemcpyDeviceToHost);
-	cudaThreadSynchronize();
 
 	gettimeofday(&tv2, NULL);
 	printf("P2 copying takes %ld micro seconds\n", (tv2.tv_sec - tv1.tv_sec) * 1000000L + (tv2.tv_usec - tv1.tv_usec));
+	cudaThreadSynchronize();
 
 	// Free device memory
 	gettimeofday(&tv1, NULL);
 	cudaFree(d_A.elements);
-	cudaFree(d_B.elements);
-	cudaFree(d_C.elements);
 	cudaStreamDestroy(stream);
 	gettimeofday(&tv2, NULL);
 	printf("P2 free takes %ld micro seconds\n", (tv2.tv_sec - tv1.tv_sec) * 1000000L + (tv2.tv_usec - tv1.tv_usec));
@@ -194,16 +169,16 @@ int main(int argc, char* argv[])
 	//h_A.elements= (float*) malloc(mem_size);
 	//h_B.elements= (float*) malloc(mem_size);
 	//h_C.elements= (float*) malloc(mem_size);
-	cudaHostAlloc(&h_A.elements, mem_size, cudaHostAllocDefault);
-	cudaHostAlloc(&h_B.elements, mem_size, cudaHostAllocDefault);
-	cudaHostAlloc(&h_C.elements, mem_size, cudaHostAllocDefault);
+	cudaHostAlloc(&h_A.elements, 48 * mem_size, cudaHostAllocDefault);
+	//cudaHostAlloc(&h_B.elements, mem_size, cudaHostAllocDefault);
+	//cudaHostAlloc(&h_C.elements, mem_size, cudaHostAllocDefault);
 
 	// set seed for rand()
 	srand(2006);
 
 	// initialize host memory
 	randomInit(h_A.elements, size);
-	randomInit(h_B.elements, size);
+	//randomInit(h_B.elements, size);
 
 	//invoke MatMul
 	MatMul(h_A,h_B,h_C);

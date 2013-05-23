@@ -101,6 +101,7 @@ __global__ void MatMulKernel(Matrix A, Matrix B, Matrix C)
 }
 
 
+static struct timeval tv0, tv1, tv2;
 /************************************************************
 ************/
 // Matrix multiplication - Host code
@@ -109,7 +110,6 @@ void MatMul(const Matrix A, const Matrix B, Matrix C)
 {
 	// Load A and B to device memory
 	Matrix d_A,d_B,d_C;
-	struct timeval tv1, tv2;
 	static cudaStream_t stream = NULL;
 
 	size_t size = A.width * A.height * sizeof(float);
@@ -147,7 +147,7 @@ void MatMul(const Matrix A, const Matrix B, Matrix C)
 	
 	cudaThreadSynchronize();
 	gettimeofday(&tv2, NULL);
-	printf("P1 Invoking kernel takes %ld micro seconds\n", (tv2.tv_sec - tv1.tv_sec) * 1000000L + (tv2.tv_usec - tv1.tv_usec));
+	printf("P1 executing kernel takes %ld micro seconds\n", (tv2.tv_sec - tv1.tv_sec) * 1000000L + (tv2.tv_usec - tv1.tv_usec));
 
 	gettimeofday(&tv1, NULL);
 	// Read C from device memory
@@ -174,6 +174,7 @@ int main(int argc, char* argv[])
 		    return 0;
 	}
 
+	gettimeofday(&tv0, NULL);
 	// allocate host memory for matrices A and B
 	Matrix h_A,h_B,h_C;
 	h_A.width=WIDTH;
@@ -202,6 +203,7 @@ int main(int argc, char* argv[])
 
 	//invoke MatMul
 	MatMul(h_A,h_B,h_C);
-
+	gettimeofday(&tv2, NULL);
+        printf("P1 takes %ld micro seconds\n", (tv2.tv_sec - tv0.tv_sec) * 1000000L + (tv2.tv_usec - tv0.tv_usec));
 	return 0;
 }
