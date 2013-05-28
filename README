@@ -1,0 +1,24 @@
+###########
+##analysis/
+###########
+
+Bash scripts and R scripts for data analysis and visualization
+
+
+############
+##exec_plan/
+############
+Query (co-run) execution plans for testing
+
+
+##########
+##gdaemon/
+##########
+Source
+
+
+##########
+##utility/
+##########
+Gadgets for data collection, query generation, and testing
+
