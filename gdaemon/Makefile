@@ -39,4 +39,4 @@ run_test_async2: test_async2 async stream
 	time LD_PRELOAD=`pwd`/ic_stream.so ./test_asyncP2
 	
 clean:
-	rm -f test gdaemon.so ic_async.so ic_stream.so test_async test_asyncP1 test_asyncP2
+	rm -f test gdaemon.so ic_async.so ic_stream.so ic_mstream.so test_async test_asyncP1 test_asyncP2
