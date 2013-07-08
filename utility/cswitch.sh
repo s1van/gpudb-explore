@@ -75,3 +75,12 @@ if [ "$CMD" == "grid1.yc" ]; then
 		echo $LINE
 	done
 fi
+
+if [ "$CMD" == "a1" ]; then
+	QS=$2;
+	Q2S=$3;
+	OUT=$4;	
+
+	$0 grid1.xc "$(cat $QS)" "$(cat $QS)" $Q2S > $OUT/xc;
+	$0 grid1.yc "$(cat $QS)" "$(cat $QS)" $Q2S > $OUT/yc;
+fi

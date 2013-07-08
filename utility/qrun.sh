@@ -4,7 +4,6 @@ CDIR=`dirname $0`
 source $CDIR/gpudb_env.sh
 
 RUNPATH=$GPUDB_CUDA_PATH
-WAIT=$(pwd)/$CDIR/wait4.sh
 
 usage() {
 	echo "Usage: `echo $0| awk -F/ '{print $NF}'`  [-option]"
@@ -63,7 +62,7 @@ while read line; do
 
 	echo "sync & cleanup ..."
 	sleep 1
-	$WAIT -s 2 -v 3 -c "ps aux|grep $RUNPATH|wc -l"
+	wait;
 	sleep 3
 	for query in $line; do
 		rm -f $RUNPATH/$query

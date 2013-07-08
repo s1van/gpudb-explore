@@ -47,6 +47,15 @@ speedup() {
 EEE
 }
 
+a1() {
+	QS=$1;
+	Q1=$2;
+	Q2PATH=$3;
+
+	slowdown $QS $Q1 $Q2PATH/xc $Q2PATH/yc $Q2PATH/slowdown.csv;
+	speedup $QS $Q1 $Q2PATH/xc $Q2PATH/yc $Q2PATH/speedup.csv;
+}
+
 ########
 ##main##
 ########

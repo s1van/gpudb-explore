@@ -1,10 +1,14 @@
 all:
 	nvcc -I${CUDA_SDK_PATH}/include -I/home/syma/etc/CUDA_5.0_SAMPLES/common/inc test.cu -arch=sm_20 -o test
 	gcc -I${CUDA_SDK_PATH}/include -shared -ldl -fPIC intercept.c gdaemon.c -o gdaemon.so
+
 async: 
 	gcc -I${CUDA_SDK_PATH}/include -shared -ldl -fPIC intercept_async.c -o ic_async.so
 stream: 
 	gcc -I${CUDA_SDK_PATH}/include -shared -ldl -fPIC intercept_stream.c -o ic_stream.so
+mstream: 
+	gcc -I${CUDA_SDK_PATH}/include -shared -ldl -fPIC intercept_mstream.c -o ic_mstream.so
+
 run:
 	LD_PRELOAD=`pwd`/gdaemon.so ./test
 run_async:
