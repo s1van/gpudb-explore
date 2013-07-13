@@ -20,4 +20,4 @@ Source
 ##utility/
 ##########
 Gadgets for data collection, query generation, and testing
-
+[Example] ./qrun.sh -i /tmp/gpudb_exec/ -r 16 -p ../exec_plan/test.plan -o /tmp/test_plan/
