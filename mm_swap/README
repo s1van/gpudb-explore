@@ -45,4 +45,4 @@ The mm_swap2 will introduce more of the traditional virtual memory ideas
 It takes full control over the MEM system, which indicates
 
 When Malloc, return a unique address (or ID) 
-WHen Launch, replace this ID with the proper VM address
+WHen Launch (or memCpy, or memset, or ...), replace this ID with the proper VM address
