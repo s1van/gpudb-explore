@@ -280,7 +280,7 @@ inline void swap_out() {
 	}
 
 	//free GPU memory
-	nv_cudaFree(obj->devPtr);
+	CUDA_SAFE_CALL_NO_SYNC(nv_cudaFree(obj->devPtr));
 	gmm_pdata->swapped ++;	
 
 #ifdef GMM_DEBUG
@@ -578,4 +578,61 @@ inline cudaError_t gmm_free(void *devPtr) {
 	}
 
 	return ret;
+}
+
+
+CUresult gmm_cuLaunchKernel(CUfunction f,
+	unsigned int 	gridDimX,
+	unsigned int 	gridDimY,
+	unsigned int 	gridDimZ,
+	unsigned int 	blockDimX,
+	unsigned int 	blockDimY,
+	unsigned int 	blockDimZ,
+	unsigned int 	sharedMemBytes,
+	CUstream 	hStream,
+	void ** 	kernelParams,
+	void ** 	extra) {
+
+	cudaError_t ret;
+	static CUresult (*nv_cuLaunchKernel)(CUfunction, unsigned int, unsigned int, unsigned int, unsigned int, 
+		unsigned int, unsigned int, unsigned int, CUstream, void**, void **) = NULL;
+	INTERCEPT_CU("cuLaunchKernel", nv_cuLaunchKernel);
+	
+	int i;
+	void* devPtr;
+	for (i=0; i<GMM_KERNEL_PARAM_LEN_MAX; i++) {
+		devPtr = kernelParams[i];
+		if (OBJ_EXISTS(gmm_pdata, hash, (unsigned long int)devPtr)) {
+#ifdef GMM_DEBUG
+			fprintf(stderr, "cuLaunchKernel::hasParameter\t");
+			print_gmm_obj(hash((unsigned long int)(devPtr)));
+#endif
+		}
+	}
+
+	return nv_cuLaunchKernel(f, gridDimX, gridDimY, gridDimZ, blockDimX,
+                blockDimY, blockDimZ, sharedMemBytes, hStream, kernelParams, extra);
+}
+
+cudaError_t gmm_cudaSetupArgument(const void *arg, size_t size, size_t offset) {
+	static cudaError_t (*nv_cudaSetupArgument) (const void *, size_t, size_t) = NULL;
+	INTERCEPT_CUDA("cudaSetupArgument", nv_cudaSetupArgument);
+
+	void* devPtr = NULL;
+	if (size == 8)
+		devPtr = (*((void **)arg));
+	if (OBJ_EXISTS(gmm_pdata, hash, (unsigned long int)devPtr)) {
+#ifdef GMM_DEBUG
+		fprintf(stderr, "cudaSetupArgument::hasParameter\t");
+		print_gmm_obj(hash((unsigned long int)(devPtr)));
+#endif
+
+		DEL_OBJ(gmm_pdata, hash, ((unsigned long int)(devPtr)) );
+		sem_wait(mutex);
+		DEC_MU(gmm_sdata, gmm_id, GET_OBJ_SIZE(gmm_pdata, hash, ((unsigned long int)(devPtr))));
+		sem_post(mutex);
+	}
+	
+	fprintf(stderr, "cudaSetupArgument::call\targ: %x\tsize: %lu\toffset %lu\n", arg, size, offset);
+	nv_cudaSetupArgument(arg, size, offset);
 }

@@ -5,6 +5,7 @@
 // by default, shmget initialize all values to 0
 #define GMM_MU_ARRAY_LEN	32
 #define GMM_IGNORE_SIZE	16384
+#define GMM_KERNEL_PARAM_LEN_MAX 16
 
 typedef struct{
 	unsigned long int mem_free;
@@ -118,5 +119,42 @@ typedef struct{
 	} while(0)
 
 #define GET_SWAPPED(_l)	((_l->swapped))
+
+#define CUDA_SAFE_CALL_NO_SYNC(call) do {	\
+	cudaError_t err = call;			\
+	if( cudaSuccess != err) {		\
+		fprintf(stderr, "[mm] Cuda error in file '%s' in line %i : %d.\n",	\
+			__FILE__, __LINE__, err );					\
+		exit(EXIT_FAILURE);							\
+	}} while(0)
+
+/* check whether dlsym returned successfully */
+#define  TREAT_ERROR()                          \
+  do {                                          \
+    char * __error;                             \
+    if ((__error = dlerror()) != NULL)  {       \
+      fputs(__error, stderr);                   \
+      abort();                                  \
+    }                                           \
+  }while(0)
+
+/* interception function func and store its previous value into var */
+#define CUDA_CULIB_PATH	"/usr/local/cuda-5.0/lib64/libcuinj64.so"
+
+#define INTERCEPT_CU(func, var)                                    \
+  do {                                                          \
+    if(var) break;                                              \
+    void *__handle = dlopen(CUDA_CULIB_PATH, RTLD_LOCAL | RTLD_LAZY);                                 \
+    var = (typeof(var)) (uintptr_t) dlsym(__handle, func);      \
+    TREAT_ERROR();                                              \
+  } while(0)
+
+#define INTERCEPT_CUDA(func, var)	\
+do {					\
+	if(var) break;			\
+	void *__handle = RTLD_NEXT;	\
+	var = (typeof(var)) (uintptr_t) dlsym(__handle, func);	\
+	TREAT_ERROR();			\
+} while(0)
 
 #endif

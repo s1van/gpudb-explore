@@ -136,3 +136,23 @@ cudaError_t cudaFree(void *devPtr)
 {
 	return gmm_free(devPtr);
 }
+
+CUresult cuLaunchKernel(CUfunction f,
+        unsigned int    gridDimX,
+        unsigned int    gridDimY,
+        unsigned int    gridDimZ,
+        unsigned int    blockDimX,
+        unsigned int    blockDimY,
+        unsigned int    blockDimZ,
+        unsigned int    sharedMemBytes,
+        CUstream        hStream,
+        void **         kernelParams,
+        void **         extra) {
+
+ 	return gmm_cuLaunchKernel(f, gridDimX, gridDimY, gridDimZ, blockDimX, 
+		blockDimY, blockDimZ, sharedMemBytes, hStream, kernelParams, extra);
+}
+
+cudaError_t cudaSetupArgument(const void *arg, size_t size, size_t offset) {
+	return gmm_cudaSetupArgument(arg, size, offset);
+}
