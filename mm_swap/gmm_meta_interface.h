@@ -4,7 +4,7 @@
 #include <device_launch_parameters.h>
 #include <cuda.h>
 
-int gmm_init_attach(unsigned long int);
+int gmm_init_attach(void);
 int gmm_reclaim(void);
 int gmm_attach(void);
 int gmm_detach(void);

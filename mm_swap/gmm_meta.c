@@ -38,7 +38,7 @@ static cudaError_t (*nv_cudaMalloc)(void **, size_t) = NULL;
 static cudaError_t (*nv_cudaFree)(void *) = NULL;
 static cudaError_t (*nv_cudaMemcpy)(void *, const void *, size_t, enum cudaMemcpyKind) = NULL;
 static cudaError_t (*nv_cudaStreamCreate)(cudaStream_t *) = NULL;
-
+static cudaError_t (*nv_cudaMemGetInfo)(size_t*, size_t*) = NULL;
 
 inline unsigned int hash(unsigned long int x) {
     x = ((x >> 16) ^ x) * 0x45d9f3b;
@@ -47,7 +47,9 @@ inline unsigned int hash(unsigned long int x) {
     return x % LOCAL_HASH_SIZE;
 }
 
-int gmm_init_attach(unsigned long int mem_size) {
+int gmm_init_attach() {
+
+	INTERCEPT_CUDA2("cudaMemGetInfo", nv_cudaMemGetInfo);	
 
 	//create and initialize semaphore
 	mutex = sem_open(GMM_SEM_NAME,O_CREAT,0644,1);
@@ -69,9 +71,11 @@ int gmm_init_attach(unsigned long int mem_size) {
 		exit(1);
 	}
 
-	//nv_cudaMemGetInfo(&gpu_mem_free, &gpu_mem_total);
+	size_t gpu_mem_free = 0;
+	size_t gpu_mem_total = 0;
+	nv_cudaMemGetInfo(&gpu_mem_free, &gpu_mem_total);
 	sem_wait(mutex);
-	INIT_GMM_SHARED(gmm_sdata, mem_size);
+	INIT_GMM_SHARED(gmm_sdata, gpu_mem_free);
 	sem_post(mutex);
 
 	return 0;

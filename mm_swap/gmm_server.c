@@ -10,12 +10,15 @@
 int main()
 {
 	char x;
-	gmm_init_attach(GPU_MEM_SIZE);
+	size_t memsize;
+	gmm_init_attach();
 	printf("GPU Memory Available: %ld\n", gmm_getFreeMem());
 	while(1) {
 		x=getchar();
 		if (x == 'r') {
-			gmm_setFreeMem(GPU_MEM_SIZE);
+			printf("Set GPU Memory in Bytes (E.g. 1347483648): \n");
+			scanf("%lu", &memsize);
+			gmm_setFreeMem(memsize);
 			printf("GPU Memory Available: %ld\n", gmm_getFreeMem());
 		} else if (x == 'q') break;
 	}

@@ -139,12 +139,13 @@ typedef struct{
   }while(0)
 
 /* interception function func and store its previous value into var */
-#define CUDA_CULIB_PATH	"/usr/local/cuda-5.0/lib64/libcuinj64.so"
+#define CUDA_CU_PATH	"/usr/local/cuda-5.0/lib64/libcuinj64.so"
+#define CUDA_CURT_PATH	"/usr/local/cuda-5.0/lib64/libcudart.so"
 
 #define INTERCEPT_CU(func, var)                                    \
   do {                                                          \
     if(var) break;                                              \
-    void *__handle = dlopen(CUDA_CULIB_PATH, RTLD_LOCAL | RTLD_LAZY);                                 \
+    void *__handle = dlopen(CUDA_CU_PATH, RTLD_LOCAL | RTLD_LAZY);                                 \
     var = (typeof(var)) (uintptr_t) dlsym(__handle, func);      \
     TREAT_ERROR();                                              \
   } while(0)
@@ -155,6 +156,14 @@ do {					\
 	void *__handle = RTLD_NEXT;	\
 	var = (typeof(var)) (uintptr_t) dlsym(__handle, func);	\
 	TREAT_ERROR();			\
+} while(0)
+
+#define INTERCEPT_CUDA2(func, var)       \
+do {                                    \
+        if(var) break;                  \
+    	void *__handle = dlopen(CUDA_CURT_PATH, RTLD_LOCAL | RTLD_LAZY);                                 \
+        var = (typeof(var)) (uintptr_t) dlsym(__handle, func);  \
+        TREAT_ERROR();                  \
 } while(0)
 
 #endif
