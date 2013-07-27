@@ -53,7 +53,7 @@ if [ "$CMD" == "grid1.xc" ]; then
 	for yc in $XCRDS; do
 		LINE=""
 		for xc in $YCRDS;do
-			VAL=$($CENTER -n 30 -f $DPATH/$xc.$yc/$xc| cut -d ':' -f 2| mean);
+			VAL=$($CENTER -n 10 -f $DPATH/$xc.$yc/$xc| cut -d ':' -f 2| mean);
 			LINE="$LINE $VAL";
 		done
 		echo $LINE
@@ -69,7 +69,7 @@ if [ "$CMD" == "grid1.yc" ]; then
 	for yc in $XCRDS; do
 		LINE=""
 		for xc in $YCRDS;do
-			VAL=$($CENTER -n 30 -f $DPATH/$xc.$yc/$yc| cut -d ':' -f 2| mean);
+			VAL=$($CENTER -n 10 -f $DPATH/$xc.$yc/$yc| cut -d ':' -f 2| mean);
 			LINE="$LINE $VAL";
 		done
 		echo $LINE

@@ -630,13 +630,14 @@ cudaError_t gmm_cudaSetupArgument(const void *arg, size_t size, size_t offset) {
 		fprintf(stderr, "cudaSetupArgument::hasParameter\t");
 		print_gmm_obj(hash((unsigned long int)(devPtr)));
 #endif
-
 		DEL_OBJ(gmm_pdata, hash, ((unsigned long int)(devPtr)) );
 		sem_wait(mutex);
 		DEC_MU(gmm_sdata, gmm_id, GET_OBJ_SIZE(gmm_pdata, hash, ((unsigned long int)(devPtr))));
 		sem_post(mutex);
 	}
 	
+#ifdef GMM_DEBUG
 	fprintf(stderr, "cudaSetupArgument::call\targ: %x\tsize: %lu\toffset %lu\n", arg, size, offset);
+#endif
 	nv_cudaSetupArgument(arg, size, offset);
 }
