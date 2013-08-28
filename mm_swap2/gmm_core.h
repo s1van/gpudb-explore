@@ -9,20 +9,22 @@
 #define GMM_SHARED	9006
 #define GMM_SHARED_SIZE	sizeof(gmm_shared_s)
 
-#define GMM_SEM_NAME	"_gmm_semaphore3_"
+#define GMM_SEM_NAME	"_gmm_semaphore4_"
 
 /*********************************** MISC ***************************************/
 #define GMM_DEBUG_MODE
 
 #ifdef GMM_DEBUG_MODE
 	#define GMM_DEBUG(call)	call
+	#define GMM_DEBUG2(head, call)	do{fprintf(stderr, head); fprintf(stderr, "\t"); call;} while(0)
 #else
 	#define GMM_DEBUG(call)	
+	#define GMM_DEBUG2(head, call)
 #endif
 
 #define GET_TIMEVAL(_t) (_t.tv_sec + _t.tv_usec / 1000000.0)
 
-#define GMM_IGNORE_SIZE 16384
+#define GMM_IGNORE_SIZE 5038400
 
 /*********************************** CUDA ***************************************/
 #define CUDA_CU_PATH    "/usr/local/cuda-5.0/lib64/libcuinj64.so"

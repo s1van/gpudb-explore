@@ -31,12 +31,14 @@ typedef struct{
 	void *memPtr;	//pointer to object in main memory
 	size_t size;	//size of the object in bytes
 	objState state;
+	int in_use_count; //TODO
 } *gmm_obj, gmm_obj_s;
 
 #define GMM_OBJ_SIZE sizeof(gmm_obj_s)
 #define GMM_KEY_SIZE sizeof(void *)
 
 typedef struct{
+	pthread_mutex_t mutex;
 	cfuhash_table_t *all;
 	cfuhash_table_t *in_gpu_mem;
 	cfuhash_table_t *in_use;
@@ -44,5 +46,11 @@ typedef struct{
 	cfuhash_table_t *unmalloced;
 	int count;			//number of objects
 } *gmm_local, gmm_local_s;
+
+#define GMM_KERNEL_ARG_NUM_MAX	16
+typedef struct{
+	gmm_obj in_use[GMM_KERNEL_ARG_NUM_MAX];
+	int in_use_num;	
+} *gmm_args, gmm_args_s;
 
 #endif
