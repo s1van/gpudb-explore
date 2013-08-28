@@ -525,7 +525,7 @@ cudaError_t cudaMemcpy(void *_dst, const void *_src, size_t count, enum cudaMemc
 	GMM_DEBUG(gmm_print_sdata());
 	GMM_DEBUG(print_gmm_local(gmm_pdata) );
 	//ret = nv_cudaMemcpyAsync(dst, src, count, kind, mystream);
-	//TODO
+	//TODO: memcpy bottom handler
 	ret = nv_cudaMemcpy(dst, src, count, kind);
 	return ret;
 }
@@ -568,7 +568,10 @@ cudaError_t cudaLaunch (void* entry) {
 	GMM_DEBUG(print_args(args));
 
 	cudaError_t ret = nv_cudaLaunch(entry);
-	cudaLaunch_bh (args);
+
+	pthread_t *pt = (pthread_t *) malloc(sizeof(pthread_t));
+	//cudaLaunch_bh (args);
+	pthread_create(pt, NULL,  cudaLaunch_bh, args);
 	
 	return ret;
 }

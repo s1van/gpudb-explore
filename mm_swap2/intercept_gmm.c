@@ -14,6 +14,7 @@
 
 #include <signal.h>
 #include <execinfo.h>
+#include <pthread.h>
 
 #include "gmm_core_interface.h"
 
@@ -31,5 +32,6 @@ void main_destructor( void )
 
 void main_destructor( void ) {
 	gmm_detach();
+	//pthread_exit(NULL);
 }
 
