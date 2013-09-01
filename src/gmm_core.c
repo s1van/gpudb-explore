@@ -18,13 +18,12 @@
 #include <sys/mman.h>
 #include <pthread.h>
 
-#include "./gmm_core.h"
-#include "./gmm_type_func.h"
+#include "gmm_core.h"
 
 
 /*********************************** data ***************************************/
-gmm_shared gmm_sdata = NULL;
-gmm_local gmm_pdata = NULL;
+gmm_global *pglobal = NULL;
+gmm_local *plocal = NULL;
 int gmm_id;
 
 sem_t *mutex;
@@ -54,109 +53,33 @@ static cudaError_t (*nv_cudaLaunch)(void *) = NULL;
 
 /*********************************** gmm functions ***************************************/
 
-int gmm_init_attach() {
+void main_constructor( void )
+    __attribute__ ((no_instrument_function, constructor));
 
-	INTERCEPT_CUDA2("cudaMemGetInfo", nv_cudaMemGetInfo);	
-
-	//create and initialize semaphore
-	mutex = sem_open(GMM_SEM_NAME,O_CREAT,0644,1);
-	if(mutex == SEM_FAILED) {
-		perror("unable to create semaphore");
-		sem_unlink(GMM_SEM_NAME);
-		exit(-1);
-	}
-
-	//create the segment
-	if ((shm_mc_id = shmget((key_t)GMM_SHARED, GMM_SHARED_SIZE, IPC_CREAT | 0666)) < 0) {
-		perror("shmget");
-		exit(1);
-	}
-
-	//attach the shared segment
-	if ((gmm_sdata = shmat(shm_mc_id, NULL, 0)) == (gmm_shared) -1) {
-		perror("shmat");
-		exit(1);
-	}
-
-	size_t gpu_mem_free = 0;
-	size_t gpu_mem_total = 0;
-	nv_cudaMemGetInfo(&gpu_mem_free, &gpu_mem_total);
-	sem_wait(mutex);
-	init_gmm_shared(gmm_sdata, gpu_mem_free);
-	sem_post(mutex);
-
-	return 0;
-}
-
-
-int gmm_reclaim() {
-	if (shm_mc_id != 0)
-		shmctl(shm_mc_id, IPC_RMID, 0);
-	return 0;
-}
-
-int gmm_attach() {
-
-	INTERCEPT_CUDA2("cudaMalloc", nv_cudaMalloc);	
-	INTERCEPT_CUDA2("cudaFree", nv_cudaFree);	
-	INTERCEPT_CUDA2("cudaMemcpy", nv_cudaMemcpy);	
-	INTERCEPT_CUDA2("cudaMemcpyAsync", nv_cudaMemcpyAsync);	
-	INTERCEPT_CUDA2("cudaStreamCreate", nv_cudaStreamCreate);	
-	INTERCEPT_CUDA2("cudaStreamSynchronize", nv_cudaStreamSynchronize);	
+void main_constructor( void ) {
+	INTERCEPT_CUDA2("cudaMalloc", nv_cudaMalloc);
+	INTERCEPT_CUDA2("cudaFree", nv_cudaFree);
+	INTERCEPT_CUDA2("cudaMemcpy", nv_cudaMemcpy);
+	INTERCEPT_CUDA2("cudaMemcpyAsync", nv_cudaMemcpyAsync);
+	INTERCEPT_CUDA2("cudaStreamCreate", nv_cudaStreamCreate);
+	INTERCEPT_CUDA2("cudaStreamSynchronize", nv_cudaStreamSynchronize);
 	INTERCEPT_CUDA2("cudaSetupArgument", nv_cudaSetupArgument);
 	INTERCEPT_CUDA2("cudaConfigureCall", nv_cudaConfigureCall);
-	INTERCEPT_CUDA2("cudaMemset", nv_cudaMemset);	
-	INTERCEPT_CUDA2("cudaMemsetAsync", nv_cudaMemsetAsync);	
-	INTERCEPT_CUDA2("cudaDeviceSynchronize", nv_cudaDeviceSynchronize);	
-	INTERCEPT_CUDA2("cudaLaunch", nv_cudaLaunch);	
+	INTERCEPT_CUDA2("cudaMemset", nv_cudaMemset);
+	INTERCEPT_CUDA2("cudaMemsetAsync", nv_cudaMemsetAsync);
+	INTERCEPT_CUDA2("cudaDeviceSynchronize", nv_cudaDeviceSynchronize);
+	INTERCEPT_CUDA2("cudaLaunch", nv_cudaLaunch);
 
-	//init arg structure for asynchorous functions
-	targs = NEW_GMM_ARGS();
-
-	//create and initialize semaphore
-	mutex = sem_open(GMM_SEM_NAME,O_CREAT,0644,1);
-	if(mutex == SEM_FAILED) {
-		perror("unable to create semaphore");
-		sem_unlink(GMM_SEM_NAME);
-		exit(-1);
-	}
-
-	//get the segment id
-	if ((shm_mc_id = shmget((key_t)GMM_SHARED, GMM_SHARED_SIZE, 0666)) < 0) {
-		perror("shmget");
-		exit(1);
-	}
-
-	//attach the shared segment
-	if ((gmm_sdata = shmat(shm_mc_id, NULL, 0)) == (gmm_shared) -1) {
-		perror("shmat");
-		exit(1);
-	}
-	
-	init_gmm_local(&gmm_pdata);
-
-	sem_wait(mutex);
-	gmm_id = new_gmm_id(gmm_sdata);
-	S_INC_PNUM(gmm_sdata);
-	sem_post(mutex);
-
-	//request for new stream for current process
-        if(!mystream)
-                nv_cudaStreamCreate(&mystream);
-
-	return 0;
+	gmm_attach();
 }
 
-int gmm_detach(){
-	sem_wait(mutex);
-	clean_gmm_shared(gmm_sdata, gmm_id);
-	S_DEC_PNUM(gmm_sdata);
-	sem_post(mutex);
 
-	sem_close(mutex);
-	sem_unlink(GMM_SEM_NAME);
-	destroy_gmm_local(gmm_pdata);
-	return 0;
+void main_destructor( void )
+        __attribute__ ((no_instrument_function, destructor));
+
+void main_destructor( void ) {
+	gmm_detach();
+	//pthread_exit(NULL);
 }
 
 inline int gmm_getID() {

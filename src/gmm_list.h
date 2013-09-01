@@ -50,13 +50,33 @@ static inline void __list_del(struct list_head * prev, struct list_head * next)
 static inline void list_del(struct list_head *entry)
 {
 	__list_del(entry->prev, entry->next);
-	entry->next = NULL;
-	entry->prev = NULL;
+}
+
+// Delete from one list and add as another's head.
+static inline void list_move(struct list_head *list, struct list_head *head)
+{
+	list_del(list);
+	list_add(list, head);
+}
+
+// Delete from one list and add as another's tail.
+static inline void list_move_tail(
+		struct list_head *list,
+		struct list_head *head)
+{
+	list_del(list);
+	list_add_tail(list, head);
+}
+
+// Test whether a list is empty.
+static inline int list_empty(const struct list_head *head)
+{
+	return head->next == head;
 }
 
 #define offsetof(TYPE, MEMBER) ((unsigned long) &((TYPE *)0)->MEMBER)
 
-// Get the struct containing this list_end entry.
+// Get the struct containing a list_head entry.
 #define list_entry(ptr, type, member) \
 	((type *) ((char *)(ptr) - offsetof(type,member)))
 

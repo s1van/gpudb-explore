@@ -3,13 +3,13 @@
 
 #include <builtin_types.h>
 #include <cuda.h>
-#include "./gmm_type.h"
+#include "gmm_type.h"
 
 /*********************************** SHM ***************************************/
 #define GMM_SHARED	9006
 #define GMM_SHARED_SIZE	sizeof(gmm_shared_s)
 
-#define GMM_SEM_NAME	"_gmm_semaphore4_"
+
 
 /*********************************** MISC ***************************************/
 #define GMM_DEBUG_MODE
