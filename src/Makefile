@@ -1,5 +1,6 @@
 CC = gcc
 NVCC = nvcc
+CFLAGS = -fvisibility=hidden -DGMM_DEBUG -DGMM_PROFILE
 
 all : gmm_server gmm_client ic_gmm.so test
 
