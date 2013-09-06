@@ -5,6 +5,8 @@
 int gmm_attach();
 void gmm_detach();
 
-long devmem_size();
+long dev_memsize();
+long dev_free_memsize();
+long dev_free_memsize_signed();
 
 #endif

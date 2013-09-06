@@ -68,6 +68,14 @@ static inline void list_move_tail(
 	list_add_tail(list, head);
 }
 
+// Iterate over a list.
+#define list_for_each(pos, head) \
+	for (pos = (head)->next; pos != (head); pos = pos->next)
+
+// Iterate over a list backwards.
+#define list_for_each_prev(pos, head) \
+	for (pos = (head)->prev; pos != (head); pos = pos->prev)
+
 // Test whether a list is empty.
 static inline int list_empty(const struct list_head *head)
 {

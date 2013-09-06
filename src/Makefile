@@ -1,6 +1,20 @@
+include gmm.cfg
+
+FLAG_DEBUG = -DGMM_DEBUG
+ifeq ($(ENABLE_DEBUG), 0)
+FLAG_DEBUG =
+endif
+
+FLAG_PROFILE = -DGMM_PROFILE
+ifeq ($(ENABLE_PROFILE), 0)
+FLAG_PROFILE =
+endif
+
 CC = gcc
 NVCC = nvcc
-CFLAGS = -fvisibility=hidden -DGMM_DEBUG -DGMM_PROFILE
+CFLAGS = -Wall -fvisibility=hidden $(FLAG_DEBUG) $(FLAG_PROFILE) $(GMM_CONFIGS)
+
+.PHONY : all run purerun clean
 
 all : gmm_server gmm_client ic_gmm.so test
 
@@ -18,8 +32,6 @@ ic_gmm.so: intercept_gmm.c gmm_core.c
 
 test: 
 	$(NVCC) test.cu -arch=sm_20 -o $(.TARGET)
-
-.PHONY: all run purerun clean
 
 run:
 	LD_PRELOAD=`pwd`/ic_gmm.so ./test

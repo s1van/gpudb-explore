@@ -3,7 +3,10 @@
 
 #include "core.h"
 
-void list_alloced_add(struct gmm_local *l, struct memobj *m);
-void list_alloced_del(struct gmm_local *l, struct memobj *m);
+#define MIN(x, y)	((x) < (y) ? (x) : (y))
+
+void list_alloced_add(struct gmm_context *ctx, struct region *m);
+void list_alloced_del(struct gmm_context *ctx, struct region *m);
+struct region *region_lookup(struct gmm_context *ctx, void *ptr);
 
 #endif

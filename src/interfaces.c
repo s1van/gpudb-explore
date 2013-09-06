@@ -11,10 +11,10 @@
 #include <driver_types.h>
 #include <cuda_runtime_api.h>
 
-#include "gmm_common.h"
-#include "gmm_core.h"
-#include "gmm_protocol.h"
-#include "gmm_interfaces.h"
+#include "common.h"
+#include "core.h"
+#include "protocol.h"
+#include "interfaces.h"
 
 
 //struct timeval t;
@@ -49,7 +49,7 @@ void gmm_init(void) {
 		GMM_DPRINT("failed to attach to the GMM server\n");
 	}
 
-	if (gmm_local_init() == -1) {
+	if (gmm_context_init() == -1) {
 		GMM_DPRINT("failed to initialize GMM local structures\n");
 		gmm_detach();
 	}
@@ -74,7 +74,7 @@ GMM_EXPORT __attribute__((destructor))
 void gmm_fini(void) {
 	// TODO: Free all live CUDA memory objects. How do GMM handle the objects
 	// created by the CUDA runtime? This can be tricky.
-	gmm_local_fini();
+	gmm_context_fini();
 	gmm_detach();
 }
 
@@ -249,7 +249,7 @@ cudaError_t cudaMalloc(void **devPtr, size_t size)
 	cudaError_t ret;
 
 	if (attached)
-		ret = gmm_cudaMalloc(devPtr, size);
+		ret = gmm_cudaMalloc(devPtr, size, 0);
 	else
 		ret = nv_cudaMalloc(devPtr, size);
 
@@ -463,8 +463,12 @@ cudaError_t cudaMemcpy(
 {
 	cudaError_t ret;
 
-	if (attached)
-		ret = gmm_cudaMemcpy(dst, src, count, kind);
+	if (attached) {
+		if (kind == cudaMemcpyHostToDevice)
+			ret = gmm_cudaMemcpyHtoD(dst, src, count);
+		else
+			ret = gmm_cudaMemcpyDtoH(dst, src, count);
+	}
 	else
 		ret = nv_cudaMemcpy(dst, src, count, kind);
 

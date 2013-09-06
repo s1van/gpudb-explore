@@ -2,7 +2,6 @@
 #include <semaphore.h>
 #include <mqueue.h>
 #include <string.h>
-#include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
 
@@ -199,8 +198,19 @@ void gmm_detach() {
 	}
 }
 
-long devmem_size()
+long dev_memsize()
 {
 	return pglobal->mem_total;
+}
+
+long dev_free_memsize()
+{
+	long freesize = pglobal->mem_total - pglobal->mem_used;
+	return freesize < 0 ? 0 : freesize;
+}
+
+long dev_free_memsize_signed()
+{
+	return pglobal->mem_total - pglobal->mem_used;
 }
 

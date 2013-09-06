@@ -4,7 +4,8 @@
 #define _GMM_PROTOCOL_H_
 
 #include <unistd.h>
-#include "gmm_list.h"
+#include "list.h"
+#include "atomic.h"
 
 // The maximum number of concurrent processes managed by GMM
 #define NCLIENTS	32
@@ -31,7 +32,9 @@ struct gmm_client {
 // The global management info shared by all GMM clients
 struct gmm_global {
 	long mem_total;				// total size of device memory
-	long mem_used;				// size of used device memory
+	atomic_l_t mem_used;		// size of used device memory
+								// NOTE: in numbers, device memory may be
+								// over-used, i.e., mem_used > mem_total
 
 	int maxclients;				// max number of clients supported
 	int nclients;				// number of attached client processes
