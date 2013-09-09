@@ -129,7 +129,7 @@ cudaError_t gmm_cudaFree(void *devPtr)
 		return cudaSuccess;
 }
 
-int gmm_htod_attached(
+int gmm_htod(
 		struct region *r,
 		void *dst,
 		const void *src,
@@ -159,32 +159,46 @@ cudaError_t gmm_cudaMemcpyHtoD(
 		return cudaErrorInvalidValue;
 	}
 
-	// Copy/COW data to the region's host swap buffer
-	if (r->state == STATE_DETACHED) {
-		int iblock = BLOCKIDX(dst - r->addr_swp);
-		int iend = BLOCKIDX(dst + (count - 1) - r->addr_swp);
-
-		memcpy(dst, src, count);
-		while (iblock <= iend) {
-			r->blocks[iblock].swp_valid = 1;
-			// xxx.dev_valid must be 0
-			iblock++;
-		}
-	}
-	else {
-		if (gmm_htod_attached(r, dst, src, count) < 0)
-			return cudaErrorUnknown;
-	}
+	if (gmm_htod(r, dst, src, count) < 0)
+		return cudaErrorUnknown;
 
 	return cudaSuccess;
 }
+
+int gmm_dtoh(
+		struct region *r,
+		void *dst,
+		const void *src,
+		size_t count);
 
 cudaError_t gmm_cudaMemcpyDtoH(
 		void *dst,
 		const void *src,
 		size_t count)
 {
+	struct region *r;
 
+	if (count <= 0)
+		return cudaErrorInvalidValue;
+
+	r = region_lookup(pcontext, src);
+	if (!r) {
+		GMM_DPRINT("could not find device memory region containing %p\n", src);
+		return cudaErrorInvalidDevicePointer;
+	}
+	if (r->state == STATE_FREEING) {
+		GMM_DPRINT("region already freed\n");
+		return cudaErrorInvalidValue;
+	}
+	if (src + count > r->addr_swp + r->size) {
+		GMM_DPRINT("device memory access out of boundary\n");
+		return cudaErrorInvalidValue;
+	}
+
+	if (gmm_dtoh(r, dst, src, count) < 0)
+		return cudaErrorUnknown;
+
+	return cudaSuccess;
 }
 
 cudaError_t gmm_cudaConfigureCall(
@@ -256,6 +270,18 @@ re_acquire:
 	return 1;
 }
 
+// TODO
+static void gmm_memcpy_dtoh(void *dst, void *src, unsigned long size)
+{
+	// Use nv_cudaMemcpyAsync
+}
+
+// TODO
+static void gmm_memcpy_htod(void *dst, void *src, unsigned long size)
+{
+	// Use nv_cudaMemcpyAsync
+}
+
 // Sync the host and device data copies of a block.
 // The direction of sync is determined by current valid flags. Data are synced
 // from the valid copy to the invalid copy.
@@ -289,6 +315,8 @@ static void gmm_block_sync(struct region *r, int block)
 // $block tells which block is being modified.
 // $skip specifies whether to skip copying if the block is being locked.
 // $skipped, if not null, returns whether skipped (1 - skipped; 0 - not skipped)
+#ifdef GMM_CONFIG_HTOD_RADICAL
+// This is an implementation matching the radical version of gmm_htod.
 static void gmm_htod_block(
 		struct region *r,
 		unsigned long offset,
@@ -298,50 +326,130 @@ static void gmm_htod_block(
 		int skip,
 		char *skipped)
 {
-	// partial over-writing?
+	struct block *b = r->blocks + block;
+
+	// partial modification
 	if ((offset % BLOCKSIZE) || (size < BLOCKSIZE && offset + size < r->size)) {
-		if (r->blocks[block].swp_valid || !r->blocks[block].dev_valid) {
+		if (b->swp_valid || !b->dev_valid) {
 			// no locking needed
 			memcpy(r->addr_swp + offset, src, size);
-			if (!r->blocks[block].swp_valid)
-				r->blocks[block].swp_valid = 1;
-			if (r->blocks[block].dev_valid)
-				r->blocks[block].dev_valid = 0;
+			if (!b->swp_valid)
+				b->swp_valid = 1;
+			if (b->dev_valid)
+				b->dev_valid = 0;
 		}
 		else {
 			// locking needed
-			while (!try_acquire(&r->blocks[block].lock)) {
+			while (!try_acquire(&b->lock)) {
 				if (skip) {
 					if (skipped)
 						*skipped = 1;
 					return;
 				}
 			}
-			if (r->blocks[block].swp_valid || !r->blocks[block].dev_valid) {
-				memcpy(r->addr_swp + offset, src, size);
-				if (!r->blocks[block].swp_valid)
-					r->blocks[block].swp_valid = 1;
-				if (r->blocks[block].dev_valid)
-					r->blocks[block].dev_valid = 0;
+			if (b->swp_valid || !b->dev_valid) {
 				release(&r->blocks[block].lock);
+				memcpy(r->addr_swp + offset, src, size);
+				if (!b->swp_valid)
+					b->swp_valid = 1;
+				if (b->dev_valid)
+					b->dev_valid = 0;
 			}
 			else {
+				// We don't need to pin the device memory because we are
+				// holding the lock of a swp_valid=0,dev_valid=1 block, which
+				// will prevent the evictor, if any, from freeing the device
+				// memory under us.
 				gmm_block_sync(r, block);
-				release(&r->blocks[block].lock);
+				release(&b->lock);
 				memcpy(r->addr_swp + offset, src, size);
-				r->blocks[block].dev_valid = 0;
+				b->dev_valid = 0;
 			}
-			if (skipped)
-				*skipped = 0;
 		}
 	}
+	// full over-writing (its valid flags have been set in advance)
 	else {
+		while (!try_acquire(&b->lock)) {
+			if (skip) {
+				if (skipped)
+					*skipped = 1;
+				return;
+			}
+		}
+		// acquire the lock and release immediately, to avoid data races with
+		// the evictor who's writing swp buffer
+		release(&r->blocks[block].lock);
+		memcpy(r->addr_swp + offset, src, size);
 	}
-}
 
-// Handle HtoD data transfer to a region that is attached with device memory.
-// Note: the region is state may enter/leave STATE_EVICTING any time during the
-// the handling process.
+	if (skipped)
+		*skipped = 0;
+}
+#else
+// This is an implementation matching the conservative version of gmm_htod.
+static void gmm_htod_block(
+		struct region *r,
+		unsigned long offset,
+		void *src,
+		unsigned long size,
+		int block,
+		int skip,
+		char *skipped)
+{
+	struct block *b = r->blocks + block;
+	int partial = (offset % BLOCKSIZE) ||
+			(size < BLOCKSIZE && offset + size < r->size);
+
+	if (b->swp_valid || !b->dev_valid) {
+		// no locking needed
+		memcpy(r->addr_swp + offset, src, size);
+		if (!b->swp_valid)
+			b->swp_valid = 1;
+		if (b->dev_valid)
+			b->dev_valid = 0;
+	}
+	else {
+		// locking needed
+		while (!try_acquire(&b->lock)) {
+			if (skip) {
+				if (skipped)
+					*skipped = 1;
+				return;
+			}
+		}
+		if (b->swp_valid || !b->dev_valid) {
+			release(&r->blocks[block].lock);
+			memcpy(r->addr_swp + offset, src, size);
+			if (!b->swp_valid)
+				b->swp_valid = 1;
+			if (b->dev_valid)
+				b->dev_valid = 0;
+		}
+		else {
+			if (partial) {
+				// We don't need to pin the device memory because we are
+				// holding the lock of a swp_valid=0,dev_valid=1 block, which
+				// will prevent the evictor, if any, from freeing the device
+				// memory under us.
+				gmm_block_sync(r, block);
+				release(&b->lock);
+			}
+			else {
+				b->swp_valid = 1;
+				release(&b->lock);
+			}
+			memcpy(r->addr_swp + offset, src, size);
+			b->dev_valid = 0;
+		}
+	}
+
+	if (skipped)
+		*skipped = 0;
+}
+#endif
+
+// Handle a HtoD data transfer request.
+// Note: the region may enter/leave STATE_EVICTING any time.
 //
 // Over-writing a whole block is different from modifying a block partially.
 // The former can be handled by invalidating the dev copy of the block
@@ -349,48 +457,49 @@ static void gmm_htod_block(
 // copy to the swp, if the dev has a newer copy, before the data can be
 // written to the swp.
 //
-// Here we provide two implementations:
-// (1) a ``transactional'' solution, which means, if anything goes wrong during
-// the copying, the states of the rest blocks are still correct. The drawback
-// of this implementation is that it is conservative and may not fully exploit
-// available concurrency in the system.
-// (2) a radical solution that fully exploits possible concurrency.
-//
-// Following is the radical solution.
-static int gmm_htod_attached(
+// Block-based memory management improves concurrency. Another important factor
+// to consider is to reduce unnecessary swapping, if the region is being
+// evicted during an HtoD action. Here we provide two implementations:
+// one is radical, the other is conservative.
+#if defined(GMM_CONFIG_HTOD_RADICAL)
+// The radical version
+static int gmm_htod(
 		struct region *r,
 		void *dst,
 		const void *src,
 		size_t count)
 {
 	int iblock, ifirst, ilast;
-	unsigned long offset;
+	unsigned long off, end;
 	void *s = src;
 	char *skipped;
 
-	offset = (unsigned long)(dst - r->addr_swp);
-	ifirst = BLOCKIDX(offset);
-	ilast = BLOCKIDX(offset + (count - 1));
+	off = (unsigned long)(dst - r->addr_swp);
+	end = off + count;
+	ifirst = BLOCKIDX(off);
+	ilast = BLOCKIDX(off + (count - 1));
 	skipped = (char *)malloc(ilast - ifirst + 1);
 	if (!skipped) {
-		GMM_DPRINT("failed to malloc for copied[]: %s\n", strerrno(errno));
+		GMM_DPRINT("failed to malloc for skipped[]: %s\n", strerrno(errno));
 		return -1;
 	}
 
-	// For each full-block over-writing, set dev_valid=0, swp_valid=1.
+	// For each full-block over-writing, set dev_valid=0 and swp_valid=1.
 	// Since we know the memory range being over-written, setting flags ahead
-	// help prevent the evicter from wasting time evicting those blocks. This
-	// is one unique advantage of us compared with CPU memory management.
+	// help prevent the evictor, if there is one, from wasting time evicting
+	// those blocks. This is one unique advantage of us compared with CPU
+	// memory management, where the OS usually does not have such interfaces
+	// or knowledge.
 	if (ifirst == ilast && count == BLOCKSIZE) {
 		r->blocks[ifirst].dev_valid = 0;
 		r->blocks[ifirst].swp_valid = 1;
 	}
 	else if (ifirst < ilast) {
-		if (offset % BLOCKSIZE == 0) {
+		if (off % BLOCKSIZE == 0) {
 			r->blocks[ifirst].dev_valid = 0;
 			r->blocks[ifirst].swp_valid = 1;
 		}
-		if ((offset + count) % BLOCKSIZE == 0 || (offset + count == r->size)) {
+		if (end % BLOCKSIZE == 0 || end == r->size) {
 			r->blocks[ilast].dev_valid = 0;
 			r->blocks[ilast].swp_valid = 1;
 		}
@@ -400,28 +509,168 @@ static int gmm_htod_attached(
 		}
 	}
 
-	// Then, copy data block by block, skipping blocks that are locked (very
-	// likely being evicted). skipped[] records whether each block was actually
-	// copied.
+	// Then, copy data block by block, skipping blocks that are not available
+	// for immediate operation (very likely due to being evicted). skipped[]
+	// records whether a block was skipped.
 	for (iblock = ifirst; iblock <= ilast; iblock++) {
-		unsigned long end = BLOCKUP(offset);
-		end = MIN(end, (unsigned long)(dst - r->addr_swp + count));
-		gmm_htod_block(r, offset, s, end - offset, iblock, 1,
-				skipped + (iblock - ifirst));
-		s += end - offset;
-		offset = end;
+		unsigned long size = MIN(BLOCKUP(off), end) - off;
+		gmm_htod_block(r, off, s, size, iblock, 1, skipped + (iblock - ifirst));
+		s += size;
+		off += size;
 	}
 
-	// Finally, copy the rest blocks, blocking if an uncopied block is locked
-	offset = (unsigned long)(dst - r->addr_swp);
+	// Finally, copy the rest blocks, no skipping.
+	off = (unsigned long)(dst - r->addr_swp);
 	s = src;
 	for (iblock = ifirst; iblock <= ilast; iblock++) {
-		unsigned long end = BLOCKUP(offset);
-		end = MIN(end, (unsigned long)(dst - r->addr_swp + count));
+		unsigned long size = MIN(BLOCKUP(off), end) - off;
 		if (skipped[iblock - ifirst])
-			gmm_htod_block(r, offset, s, end - offset, iblock, 0, NULL);
-		s += end - offset;
-		offset = end;
+			gmm_htod_block(r, off, s, size, iblock, 0, NULL);
+		s += size;
+		off += size;
+	}
+
+	free(skipped);
+	return 0;
+}
+#else
+// The conservative version
+static int gmm_htod(
+		struct region *r,
+		void *dst,
+		const void *src,
+		size_t count)
+{
+	unsigned long off, end, size;
+	int ifirst, ilast, iblock;
+	char *skipped;
+	void *s = src;
+
+	off = (unsigned long)(dst - r->addr_swp);
+	end = off + count;
+	ifirst = BLOCKIDX(off);
+	ilast = BLOCKIDX(end - 1);
+	skipped = (char *)malloc(ilast - ifirst + 1);
+	if (!skipped) {
+		GMM_DPRINT("failed to malloc for skipped[]: %s\n", strerrno(errno));
+		return -1;
+	}
+
+	// Copy data block by block, skipping blocks that are not available
+	// for immediate operation (very likely due to being evicted). skipped[]
+	// records whether a block was skipped.
+	for (iblock = ifirst; iblock <= ilast; iblock++) {
+		size = MIN(BLOCKUP(off), end) - off;
+		gmm_htod_block(r, off, s, size, iblock, 1, skipped + (iblock - ifirst));
+		s += size;
+		off += size;
+	}
+
+	// Then, copy the rest blocks, no skipping.
+	off = (unsigned long)(dst - r->addr_swp);
+	s = src;
+	for (iblock = ifirst; iblock <= ilast; iblock++) {
+		size = MIN(BLOCKUP(off), end) - off;
+		if (skipped[iblock - ifirst])
+			gmm_htod_block(r, off, s, size, iblock, 0, NULL);
+		s += size;
+		off += size;
+	}
+
+	free(skipped);
+	return 0;
+}
+#endif
+
+static int gmm_dtoh_block(
+		void *dst,
+		struct region *r,
+		unsigned long off,
+		unsigned long size,
+		int iblock,
+		int skip,
+		char *skipped)
+{
+	struct block *b = r->blocks + iblock;
+
+	if (b->swp_valid) {
+		memcpy(dst, r->addr_swp + off, size);
+		return 0;
+	}
+
+	while (!try_acquire(&b->lock)) {
+		if (skip) {
+			if (skipped)
+				*skipped = 1;
+			return 0;
+		}
+	}
+
+	if (b->swp_valid) {
+		release(&b->lock);
+		memcpy(dst, r->addr_swp + off, size);
+	}
+	else if (!b->dev_valid) {
+		release(&b->lock);
+	}
+	else if (skip) {
+		release(&b->lock);
+		if (skipped)
+			*skipped = 1;
+		return 0;
+	}
+	else {
+		// We don't need to pin the device memory because we are holding the
+		// lock of a swp_valid=0,dev_valid=1 block, which will prevent the
+		// evictor, if any, from freeing the device memory under us.
+		gmm_block_sync(r, iblock);
+		release(&b->lock);
+		memcpy(dst, r->addr_swp + off, size);
+	}
+
+	if (skipped)
+		*skipped = 0;
+
+	return 0;
+}
+
+static int gmm_dtoh(
+		struct region *r,
+		void *dst,
+		const void *src,
+		size_t count)
+{
+	unsigned long off = (unsigned long)(src - r->addr_swp);
+	unsigned long end = off + count, size;
+	int ifirst = BLOCKIDX(off), iblock;
+	char *skipped;
+
+	skipped = (char *)malloc(BLOCKIDX(end - 1) - ifirst + 1);
+	if (!skipped) {
+		GMM_DPRINT("failed to malloc for skipped[]: %s\n", strerrno(errno));
+		return -1;
+	}
+
+	// First, copy blocks whose swp buffers contain immediate, valid data
+	iblock = ifirst;
+	while (off < end) {
+		size = MIN(BLOCKUP(off), end) - off;
+		gmm_dtoh_block(dst, r, off, size, iblock, 1, skipped + iblock - ifirst);
+		dst += size;
+		off += size;
+		iblock++;
+	}
+
+	// Then, copy the rest blocks
+	off = (unsigned long)(src - r->addr_swp);
+	iblock = ifirst;
+	while (off < end) {
+		size = MIN(BLOCKUP(off), end) - off;
+		if (skipped[iblock - ifirst])
+			gmm_dtoh_block(dst, r, off, size, iblock, 0, NULL);
+		dst += size;
+		off += size;
+		iblock++;
 	}
 
 	free(skipped);
