@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <string.h>
+#include <sched.h>
 
 #include "common.h"
 #include "client.h"
@@ -28,6 +29,18 @@ extern cudaError_t (*nv_cudaLaunch)(void *);
 
 struct gmm_context *pcontext = NULL;
 
+static int gmm_free(struct memobj *m);
+static int gmm_htod(
+		struct region *r,
+		void *dst,
+		const void *src,
+		size_t count);
+static int gmm_dtoh(
+		struct region *r,
+		void *dst,
+		const void *src,
+		size_t count);
+
 
 int gmm_context_init()
 {
@@ -43,7 +56,7 @@ int gmm_context_init()
 	}
 
 	initlock(&pcontext->lock);
-	pcontext->size_alloced = 0;
+	//pcontext->size_alloced = 0;
 	pcontext->size_attached = 0;
 	INIT_LIST_HEAD(&pcontext->list_alloced);
 	INIT_LIST_HEAD(&pcontext->list_attached);
@@ -69,7 +82,7 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags)
 	struct region *mem;
 	int nblocks;
 
-	if (size > dev_memsize()) {
+	if (size > get_memsize()) {
 		GMM_DPRINT("request cudaMalloc size (%u) too large (dev: %ld)", \
 				size, devmem_size());
 		return cudaErrorMemoryAllocation;
@@ -112,28 +125,20 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags)
 	return cudaSuccess;
 }
 
-int gmm_free(struct memobj *m);
-
 cudaError_t gmm_cudaFree(void *devPtr)
 {
-	struct region *rgn;
+	struct region *r;
 
-	if (!(rgn = region_lookup(pcontext, devPtr))) {
+	if (!(r = region_lookup(pcontext, devPtr))) {
 		GDEV_DPRINT("cannot find memory object with devPtr %p\n", devPtr);
 		return cudaErrorInvalidDevicePointer;
 	}
 
-	if (gmm_free(rgn) < 0)
+	if (gmm_free(r) < 0)
 		return cudaErrorUnknown;
 	else
 		return cudaSuccess;
 }
-
-int gmm_htod(
-		struct region *r,
-		void *dst,
-		const void *src,
-		size_t count);
 
 cudaError_t gmm_cudaMemcpyHtoD(
 		void *dst,
@@ -165,12 +170,6 @@ cudaError_t gmm_cudaMemcpyHtoD(
 	return cudaSuccess;
 }
 
-int gmm_dtoh(
-		struct region *r,
-		void *dst,
-		const void *src,
-		size_t count);
-
 cudaError_t gmm_cudaMemcpyDtoH(
 		void *dst,
 		const void *src,
@@ -201,15 +200,43 @@ cudaError_t gmm_cudaMemcpyDtoH(
 	return cudaSuccess;
 }
 
+// For passing reference hints before each kernel launch
+int arguments[NARGUMENTS];
+int nargs = 0;
+
+// Pass reference hints. $which_arg tells which argument in the following
+// cudaSetupArgument calls is a device memory address.
+cudaError_t cudaReference(int which_arg)
+{
+	if (nargs < NARGUMENTS)
+		arguments[nargs++] = which_arg;
+	else {
+		GMM_DPRINT("too many reference hints for a kernel (max %d)\n", \
+				NARGUMENTS);
+		return cudaErrorInvalidValue;
+	}
+
+	return cudaSuccess;
+}
+
+// TODO: either do something really useful or simply delete this function
 cudaError_t gmm_cudaConfigureCall(
 		dim3 gridDim,
 		dim3 blockDim,
 		size_t sharedMem,
 		cudaStream_t stream)
 {
-
+	return nv_cudaConfigureCall(gridDim, blockDim, sharedMem, stream);
 }
 
+// CUDA pushes kernel arguments from left to right. For example, for a kernel
+//		k(a, b, c)
+// , a will be called with gmm_cudaSetupArgument first, followed by b and
+// finally c. $offset gives the actual offset of an argument in the call stack,
+// rather than which argument being pushed.
+//
+// Use reference hints if any. Otherwise, parse automatically (but there may be
+// parsing errors).
 cudaError_t gmm_cudaSetupArgument(
 		const void *arg,
 		size_t size,
@@ -220,7 +247,12 @@ cudaError_t gmm_cudaSetupArgument(
 
 cudaError_t gmm_cudaLaunch(void* entry)
 {
+	// First handle detached regions
 
+	// Then reset reference hints
+	nargs = 0;
+
+	// Finally launch kernel
 }
 
 cudaError_t gmm_cudaMemset(void * devPtr, int value, size_t count)
@@ -228,42 +260,56 @@ cudaError_t gmm_cudaMemset(void * devPtr, int value, size_t count)
 
 }
 
-// TODO
+// The return value of this function tells whether the region has been
+// immediately freed. 0 - not freed yet; 1 - freed.
 static int gmm_free(struct region *r)
 {
 	int being_evicted = 0;
 
+	// First, properly inspect/set region state
 re_acquire:
 	acquire(&r->lock);
-
 	switch (r->state) {
 	case STATE_ATTACHED:
+		if (!region_pinned(r))
+			list_attached_del(pcontext, r);
+		else {
+			release(&r->lock);
+			sched_yield();
+			goto re_acquire;
+		}
 		break;
 	case STATE_EVICTING:
+		// Tell the evictor that this region is being freed
+		r->state = STATE_FREEING;
+		release(&r->lock);
+		return 0;
 		break;
 	case STATE_FREEING:
+		// The evictor has not seen this region being freed
+		release(&r->lock);
+		sched_yield();
+		goto re_acquire;
+		break;
+	case STATE_DETACHED:
 		break;
 	default:
+		panic("unknown region state (in gmm_free)");
 		break;
 	}
 	release(&r->lock);
 
-	if (being_evicted) {
-#ifdef GMM_CONFIG_FREE_OPTIMIZE
-		return 0;
-#else
-		being_evicted = 0;
-		goto re_acquire;
-#endif
-	}
-
-	// Now this memory region can be freed
-	list_alloced_del(r);
-	free(r->blocks);
-	munmap(r->addr_swp, r->size);
+	// Now, this memory region can be freed
+	list_alloced_del(pcontext, r);
+	if (r->blocks)
+		free(r->blocks);
+	if (r->addr_swp)
+		munmap(r->addr_swp, r->size);
 	if (r->state == STATE_ATTACHED && r->addr_dev) {
 		nv_cudaFree(r->addr_dev);
-		// TODO: update local and global info
+		atomic_subl(&pcontext->size_attached, r->size);
+		update_attached(-r->size);
+		update_detachable(-r->size);
 	}
 	free(r);
 
@@ -634,6 +680,9 @@ static int gmm_dtoh_block(
 	return 0;
 }
 
+// TODO: It is possible to achieve pipelined copying, i.e., copy a block from
+// its host swap buffer to user buffer while the next block is being fetched
+// from device memory.
 static int gmm_dtoh(
 		struct region *r,
 		void *dst,

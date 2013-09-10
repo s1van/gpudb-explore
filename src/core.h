@@ -13,10 +13,10 @@
 // The local management info within each GMM client
 struct gmm_context {
 	struct spinlock lock;				// mutex for local synchronizations
-	long size_alloced;					// total size of allocated mem
-	long size_attached;					// total size of attached mem
-	struct list_head list_alloced;		// list of all mem objects
-	struct list_head list_attached;		// LRU list of attached mem objects
+	//atomic_l_t size_alloced;			// total size of allocated mem regions
+	atomic_l_t size_attached;			// total size of attached mem regions
+	struct list_head list_alloced;		// list of all allocated mem regions
+	struct list_head list_attached;		// LRU list of attached mem regions
 };
 
 // State of a device memory region
@@ -59,6 +59,9 @@ struct region {
 #define NRBLOCKS(size)		(((size) + BLOCKSIZE - 1) / BLOCKSIZE)
 #define BLOCKIDX(offset)	((unsigned long)(offset) / BLOCKSIZE)
 #define BLOCKUP(offset)		((offset + BLOCKSIZE) / BLOCKSIZE * BLOCKSIZE)
+
+// Maximum number of arguments that are device memory pointers
+#define NARGUMENTS		32
 
 // Functions exposed by GMM core
 int gmm_context_init();

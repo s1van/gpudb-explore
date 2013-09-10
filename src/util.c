@@ -1,16 +1,30 @@
 #include "util.h"
 
-void list_alloced_add(struct gmm_context *ctx, struct region *m)
+void list_alloced_add(struct gmm_context *ctx, struct region *r)
 {
 	acquire(&ctx->lock);
-	list_add(&m->entry_alloced, &ctx->list_alloced);
+	list_add(&r->entry_alloced, &ctx->list_alloced);
 	release(&ctx->lock);
 }
 
-void list_alloced_del(struct gmm_context *ctx, struct region *m)
+void list_alloced_del(struct gmm_context *ctx, struct region *r)
 {
 	acquire(&ctx->lock);
-	list_del(&m->entry_alloced);
+	list_del(&r->entry_alloced);
+	release(&ctx->lock);
+}
+
+void list_attached_add(struct gmm_context *ctx, struct region *r)
+{
+	acquire(&ctx->lock);
+	list_add(&r->entry_attached, &ctx->list_attached);
+	release(&ctx->lock);
+}
+
+void list_attached_del(struct gmm_context *ctx, struct region *r)
+{
+	acquire(&ctx->lock);
+	list_del(&r->entry_attached);
 	release(&ctx->lock);
 }
 

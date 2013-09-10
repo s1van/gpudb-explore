@@ -10,6 +10,11 @@ static inline void atomic_set(atomic_t *ptr, int val)
 	*ptr = val;
 }
 
+static inline int atomic_read(atomic_t *ptr)
+{
+	return *ptr;
+}
+
 static inline int atomic_add(atomic_t *ptr, int val)
 {
 	return __sync_fetch_and_add(ptr, val);
@@ -34,6 +39,11 @@ static inline int atomic_dec(atomic_t *ptr)
 static inline void atomic_setl(atomic_l_t *ptr, int val)
 {
 	*ptr = val;
+}
+
+static inline int atomic_readl(atomic_l_t *ptr)
+{
+	return *ptr;
 }
 
 static inline long atomic_addl(atomic_l_t *ptr, long val)

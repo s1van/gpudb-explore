@@ -18,10 +18,10 @@ struct gmm_client {
 		int next;
 	} list_client;			// linked into the LRU client list
 
-	long size_attached;
+	//long size_attached;		// TODO: maybe hide this?
 	long size_detachable;
-	long lru_size;
-	long lru_cost;
+	//long lru_size;		// TODO
+	//long lru_cost;		// TODO
 
 	// Each client has two message queues: one that receives
 	// requests from other clients, named "gr_%pid", the other
@@ -31,15 +31,18 @@ struct gmm_client {
 
 // The global management info shared by all GMM clients
 struct gmm_global {
-	long mem_total;				// total size of device memory
-	atomic_l_t mem_used;		// size of used device memory
+	struct spinlock lock;		// The lock; it works only when the cache
+								// coherence protocol works for virutal caches
+								// as well.
+	long mem_total;				// Total size of device memory
+	atomic_l_t size_attached;	// Size of used (attached) device memory
 								// NOTE: in numbers, device memory may be
 								// over-used, i.e., mem_used > mem_total
 
-	int maxclients;				// max number of clients supported
-	int nclients;				// number of attached client processes
-	int ilru;					// index of the lru client
-	int imru;					// index of the mru client
+	int maxclients;				// Max number of clients supported
+	int nclients;				// Number of attached client processes
+	int ilru;					// Index of the LRU client
+	int imru;					// Index of the MRU client
 	struct gmm_client clients[NCLIENTS];
 };
 

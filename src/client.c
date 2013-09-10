@@ -198,19 +198,29 @@ void gmm_detach() {
 	}
 }
 
-long dev_memsize()
+long get_memsize()
 {
 	return pglobal->mem_total;
 }
 
-long dev_free_memsize()
+long get_free_memsize()
 {
-	long freesize = pglobal->mem_total - pglobal->mem_used;
+	long freesize = pglobal->mem_total - pglobal->size_attached;
 	return freesize < 0 ? 0 : freesize;
 }
 
-long dev_free_memsize_signed()
+long get_free_memsize_signed()
 {
-	return pglobal->mem_total - pglobal->mem_used;
+	return pglobal->mem_total - pglobal->size_attached;
+}
+
+void update_attached(long delta)
+{
+	atomic_addl(&pglobal->size_attached, delta);
+}
+
+void update_detachable(long delta)
+{
+	atomic_addl(&pglobal->clients[cid].size_detachable, delta);
 }
 
