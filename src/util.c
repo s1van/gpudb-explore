@@ -31,7 +31,7 @@ void list_attached_del(struct gmm_context *ctx, struct region *r)
 // Look up a memory object by the ptr passed from user program.
 // ptr should fall within the virtual memory area of the host swap buffer of
 // the memory object, if it can be found.
-struct region *region_lookup(struct gmm_context *ctx, void *ptr)
+struct region *region_lookup(struct gmm_context *ctx, const void *ptr)
 {
 	struct region *r;
 	struct list_head *pos;
@@ -53,3 +53,5 @@ struct region *region_lookup(struct gmm_context *ctx, void *ptr)
 
 	return r;
 }
+
+

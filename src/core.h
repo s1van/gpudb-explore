@@ -28,6 +28,13 @@ typedef enum region_state {
 	STATE_EVICTED
 } region_state_t;
 
+// Hints passed to a device memory region
+struct rgn_hint {
+	// RW
+	int rw_static;
+	int rw_dynmic;
+};
+
 // Device memory block.
 #define BLOCKSIZE		(4096 * 1024)
 struct block {
@@ -51,8 +58,18 @@ struct region {
 	region_state_t state;	// state of the object
 	atomic_t pinned;		// atomic pin counter
 
+	struct rgn_hint hint;	// hint
+
 	struct list_head entry_alloced;		// linked to the list of allocated
 	struct list_head entry_attached;	// linked to the list of attached
+};
+
+// A kernel argument that is a device memory pointer
+struct dptr_arg {
+	struct region *r;		// the region this argument points to
+	unsigned long off;		// device pointer offset in the region
+	void *dptr;				// the actual device memory address
+	unsigned long argoff;	// this argument's offset in the argument stack
 };
 
 
@@ -60,8 +77,9 @@ struct region {
 #define BLOCKIDX(offset)	((unsigned long)(offset) / BLOCKSIZE)
 #define BLOCKUP(offset)		((offset + BLOCKSIZE) / BLOCKSIZE * BLOCKSIZE)
 
-// Maximum number of arguments that are device memory pointers
-#define NARGUMENTS		32
+// Maximum number of kernel arguments that may be device memory pointers
+#define NREFS		32
+
 
 // Functions exposed by GMM core
 int gmm_context_init();

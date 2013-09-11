@@ -552,7 +552,7 @@ cudaError_t cudaDeviceSynchronize()
 }
 
 GMM_EXPORT
-cudaError_t cudaLaunch(void* entry)
+cudaError_t cudaLaunch(const char *entry)
 {
 	cudaError_t ret;
 

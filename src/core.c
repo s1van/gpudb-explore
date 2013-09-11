@@ -26,9 +26,6 @@ extern cudaError_t (*nv_cudaMemsetAsync)(void * , int , size_t, cudaStream_t);
 extern cudaError_t (*nv_cudaDeviceSynchronize)(void);
 extern cudaError_t (*nv_cudaLaunch)(void *);
 
-
-struct gmm_context *pcontext = NULL;
-
 static int gmm_free(struct memobj *m);
 static int gmm_htod(
 		struct region *r,
@@ -40,6 +37,10 @@ static int gmm_dtoh(
 		void *dst,
 		const void *src,
 		size_t count);
+static int gmm_attach_all(struct dptr_arg *args, int n);
+
+
+struct gmm_context *pcontext = NULL;
 
 
 int gmm_context_init()
@@ -201,18 +202,32 @@ cudaError_t gmm_cudaMemcpyDtoH(
 }
 
 // For passing reference hints before each kernel launch
-int arguments[NARGUMENTS];
-int nargs = 0;
+// TODO: should prepare the following structures for each stream
+static int refs[NREFS];
+static int nrefs = 0;
 
-// Pass reference hints. $which_arg tells which argument in the following
-// cudaSetupArgument calls is a device memory address.
+// New CUDA Interface: pass reference hints.
+// $which_arg tells which argument in the following
+// cudaSetupArgument calls is a device memory pointer.
+//
+// The GMM runtime should expect to see the following call sequence:
+// cudaReference, ..., cudaReference, cudaConfigureCall, cudaSetupArgument,
+// ..., cudaSetupArgument, cudaLaunch
+//
 cudaError_t cudaReference(int which_arg)
 {
-	if (nargs < NARGUMENTS)
-		arguments[nargs++] = which_arg;
+	int i;
+
+	if (which_arg < NREFS) {
+		for (i = 0; i < nrefs; i++) {
+			if (refs[i] == which_arg)
+				break;
+		}
+		if (i == nrefs)
+			refs[nrefs++] = which_arg;
+	}
 	else {
-		GMM_DPRINT("too many reference hints for a kernel (max %d)\n", \
-				NARGUMENTS);
+		GMM_DPRINT("bad reference hint %d (max %d)\n", which_arg, NREFS-1);
 		return cudaErrorInvalidValue;
 	}
 
@@ -229,30 +244,130 @@ cudaError_t gmm_cudaConfigureCall(
 	return nv_cudaConfigureCall(gridDim, blockDim, sharedMem, stream);
 }
 
+// The regions referenced by the following kernel to be launched
+// TODO: should prepare the following structures for each stream
+static struct dptr_arg dargs[NREFS];
+static int nargs = 0;
+
+static int iarg = 0;	// which argument current cudaSetupArgument refers to
+
 // CUDA pushes kernel arguments from left to right. For example, for a kernel
-//		k(a, b, c)
-// , a will be called with gmm_cudaSetupArgument first, followed by b and
+//				k(a, b, c)
+// , a will be pushed with gmm_cudaSetupArgument first, followed by b, and
 // finally c. $offset gives the actual offset of an argument in the call stack,
 // rather than which argument being pushed.
 //
-// Use reference hints if any. Otherwise, parse automatically (but there may be
-// parsing errors).
+// Let's assume cudaSetupArgument is invoked following the sequence of
+// arguments.
 cudaError_t gmm_cudaSetupArgument(
 		const void *arg,
 		size_t size,
 		size_t offset)
 {
+	struct region *r;
+	cudaError_t ret;
+	int is_dptr = 0;
 
+	// Test whether this argument is a device memory pointer. If it is,
+	// record it and postpone its pushing until cudaLaunch.
+	// Use reference hints if given.
+	if (nrefs > 0) {
+		int i;
+		for (i = 0; i < nrefs; i++) {
+			if (refs[i] == iarg)
+				break;
+		}
+		if (i < nrefs) {
+			if (size != sizeof(void *))
+				panic("cudaSetupArgument");
+			r = region_lookup(pcontext, *(void **)arg);
+			if (!r)
+				// TODO: report error less aggressively
+				panic("region_lookup in cudaSetupArgument");
+			is_dptr = 1;
+		}
+	}
+	// Otherwise, parse automatically (but parsing errors are possible, e.g.,
+	// when the user pass the long argument that happen to lay within some
+	// region's host swap buffer area).
+	else if (size == sizeof(void *)) {
+		r = region_lookup(pcontext, *(void **)arg);
+		if (r)
+			is_dptr = 1;
+	}
+
+	if (is_dptr) {
+		dargs[nargs].r = r;
+		dargs[nargs].off = (unsigned long)(*(void **)arg - r->addr_swp);
+		dargs[nargs].argoff = offset;
+		nargs++;
+		ret = cudaSuccess;
+	}
+	else
+		// This argument is not a device memory pointer
+		ret = nv_cudaSetupArgument(arg, size, offset);
+
+	iarg++;
+	return ret;
 }
 
-cudaError_t gmm_cudaLaunch(void* entry)
+cudaError_t gmm_cudaLaunch(const char *entry)
 {
-	// First handle detached regions
+	cudaError_t ret = cudaSuccess;
+	struct region **rgns = NULL;
+	int nrgns = 0;
+	int i, shit;
 
-	// Then reset reference hints
+	if (nrefs > NREFS)
+		panic("nrefs");
+	if (nargs <= 0 || nargs > NREFS)
+		panic("nargs");
+
+	rgns = (struct region *)malloc(sizeof(struct region *) * NREFS);
+	if (!rgns) {
+		GMM_DPRINT("malloc failed for region array in gmm_cudaLaunch: %s\n", \
+				strerror(errno));
+		ret = cudaErrorLaunchOutOfResources;
+		goto finish;
+	}
+
+	// It is possible that multiple device pointers fall into the same region.
+	// Get the list of unique regions referenced by the kernel being launched.
+	for (i = 0; i < nargs; i++)
+		if (!is_included(rgns, nrgns, dargs[i].r))
+			rgns[nrgns++] = dargs[i].r;
+
+	// Attach all referenced regions. At any time, only one context
+	// is allowed to attach regions for kernel launch.
+	// This is to avoid deadlocks/livelocks caused by memory
+	// contentions from concurrent kernel launches.
+	// TODO: Add kernel scheduling logic here.
+re_attach:
+	begin_attach();
+	shit = gmm_attach_all(rgns, nrgns);
+	end_attach();
+	if (shit) {
+		sched_yield();
+		goto re_attach;
+	}
+
+	// Process RW hints
+
+	// Push all device pointer arguments
+	for (i = 0; i < nargs; i++) {
+		dargs[i].dptr = dargs[i].r->addr_dev + dargs[i].off;
+		nv_cudaSetupArgument(&dargs[i].dptr, 8, dargs[i].argoff);
+	}
+
+	// Now we can launch the kernel; rgns will be freed when the kernel
+	// finishes execution.
+	ret = gmm_launch(entry, rgns, nrgns);
+
+finish:
+	nrefs = 0;
 	nargs = 0;
-
-	// Finally launch kernel
+	iarg = 0;
+	return ret;
 }
 
 cudaError_t gmm_cudaMemset(void * devPtr, int value, size_t count)
@@ -723,5 +838,10 @@ static int gmm_dtoh(
 	}
 
 	free(skipped);
+	return 0;
+}
+
+static int gmm_attach_all(struct dptr_arg *args, int n)
+{
 	return 0;
 }
