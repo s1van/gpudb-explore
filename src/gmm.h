@@ -4,7 +4,7 @@
 #include <driver_types.h>
 #include <cuda_runtime_api.h>
 
-// The GMM extensions to CUDA runtime interfaces, defined in gmm_interfaces.c
+// The GMM extensions to CUDA runtime interfaces
 cudaError_t cudaReference(int which_arg);
 
 #endif

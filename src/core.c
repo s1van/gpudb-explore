@@ -913,7 +913,29 @@ static int gmm_dtoh(
 	return 0;
 }
 
+static int gmm_load1(struct region **rgns, int n)
+{
+	return 0;
+}
+
+static int gmm_load2(struct region **rgns, int n)
+{
+	return 0;
+}
+
+static int gmm_load3(struct region **rgns, int n)
+{
+	return 0;
+}
+
 // Load all $n regions specified by $rgns to device.
+//
+// Load memory regions in three rounds:
+//   first, load objects that are already in attached states;
+//   then, load objects that are in detached states;
+//   finally, load the rest, blocking for an object if it is
+//   still being evicted.
+//
 // Every successfully loaded region is pinned to device.
 // If all regions cannot be loaded successfully, successfully
 // loaded regions will be unpinned so that they can be
@@ -926,19 +948,13 @@ static int gmm_load(struct region **rgns, int n)
 	if (!rgns || n <= 0)
 		return -1;
 
-	pinned = (char *)malloc(n);
+	pinned = (char *)zalloc(n);
 	if (!pinned) {
 		GMM_DPRINT("malloc failed for pinned array: %s\n", strerr(errno));
 		return -1;
 	}
+	memset(pinned, 0, n);
 
-	/*
-	 * Load memory regions in three rounds:
-	 * first, load objects that are already in attached states;
-	 * then, load objects that are in detached states;
-	 * finally, load the rest, blocking for an object if it is
-	 * still being evicted.
-	 */
 	ret = gmm_load1(rgns, n, pinned);
 	if (ret)
 		goto fail;
@@ -953,7 +969,6 @@ static int gmm_load(struct region **rgns, int n)
 	return 0;
 
 fail:
-	/* Unpin all memory regions pinned during the three rounds */
 	for (i = 0; i < n; i++)
 		if (pinned[i])
 			gmm_unpin(rgns[i]);
