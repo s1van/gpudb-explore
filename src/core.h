@@ -84,7 +84,7 @@ struct gmm_context {
 
 	cudaStream_t stream_dma;			// The CUDA stream for DMA operations
 	cudaStream_t stream_kernel;			// The CUDA stream for kernel launches
-	struct kernel_callback cb_kernel;
+	struct kernel_callback kcb;
 };
 
 

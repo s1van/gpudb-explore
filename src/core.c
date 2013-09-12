@@ -913,10 +913,10 @@ void CUDART_CB gmm_kernel_callback(
 	struct region **rgns;
 	int i, nrgns;
 
-	acquire(&pcontext->cb_kernel.lock);
-	if (cb_get(&pcontext->cb_kernel, &rgns, &nrgns) < 0)
-		panic("cb_get");
-	release(&pcontext->cb_kernel.lock);
+	acquire(&pcontext->kcb.lock);
+	if (kcb_get(&pcontext->kcb, &rgns, &nrgns) < 0)
+		panic("kcb_get");
+	release(&pcontext->kcb.lock);
 
 	for (i = 0; i < nrgns; i++)
 		gmm_unpin(rgns[i]);
@@ -928,18 +928,17 @@ static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 {
 	int ret = 0;
 
-	acquire(&pcontext->cb_kernel.lock);
-	if (cb_push(&pcontext->cb_kernel, rgns, nrgns) < 0)
-		panic("cb_put");
+	acquire(&pcontext->kcb.lock);
+	if (kcb_push(&pcontext->kcb, rgns, nrgns) < 0)
+		panic("kcb_push");
 	if (nv_cudaLaunch(entry) != cudaSuccess) {
-		cb_pop(NULL, NULL);
+		kcb_pop(NULL, NULL);
 		ret = -1;
 	}
-	else {
+	else
 		cudaStreamAddCallback(pcontext->stream_kernel, gmm_kernel_callback,
 				NULL, 0);
-	}
-	release(&pcontext->cb_kernel.lock);
+	release(&pcontext->kcb.lock);
 
 	return ret;
 }
