@@ -37,7 +37,7 @@ static int gmm_dtoh(
 		void *dst,
 		const void *src,
 		size_t count);
-static int gmm_attach_all(struct dptr_arg *args, int n);
+static int gmm_load(struct region **rgns, int nrgns);
 
 
 // The GMM context for this process
@@ -252,14 +252,25 @@ cudaError_t cudaReference(int which_arg)
 	return cudaSuccess;
 }
 
-// TODO: either do something really useful or simply delete this function
+// Which stream is the upcoming kernel to be issued to?
+static cudaStream_t stream_issue = 0;
+
+// TODO: Currently, issue_stream is always set to pcontext->stream_kernel.
+// This is not the best solution because it forbids kernels from being
+// issued to different streams, which is required for, e.g., concurrent
+// kernel executions.
+// A better design is to prepare a kernel callback queue for each possible
+// stream in pcontext->kcb; kernel callbacks are registered in queues where
+// they are issued to. This both maintains the correctness of kernel callbacks
+// and retains the capability that kernels being issued to multiple streams.
 cudaError_t gmm_cudaConfigureCall(
 		dim3 gridDim,
 		dim3 blockDim,
 		size_t sharedMem,
 		cudaStream_t stream)
 {
-	return nv_cudaConfigureCall(gridDim, blockDim, sharedMem, stream);
+	stream_issue = pcontext->stream_kernel;
+	return nv_cudaConfigureCall(gridDim, blockDim, sharedMem, stream_issue);
 }
 
 // The regions referenced by the following kernel to be launched
@@ -291,6 +302,8 @@ cudaError_t gmm_cudaSetupArgument(
 	// (but parsing errors are possible, e.g., when the user pass the
 	// long argument that happen to lay within some region's host swap
 	// buffer area).
+	// XXX: maybe we should assume all memory objects are to be referenced
+	// if not reference hints are given.
 	if (nrefs > 0) {
 		int i;
 		for (i = 0; i < nrefs; i++) {
@@ -365,18 +378,18 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 		goto finish;
 	}
 
-	// Attach all referenced regions. At any time, only one context
-	// is allowed to attach regions for kernel launch. This is to
+	// Load all referenced regions. At any time, only one context
+	// is allowed to load regions for kernel launch. This is to
 	// avoid deadlocks/livelocks caused by memory contentions from
 	// concurrent kernel launches.
 	// TODO: Add kernel scheduling logic here.
-re_attach:
-	begin_attach();
-	shit = gmm_attach_all(rgns, nrgns);
-	end_attach();
+reload:
+	begin_load();
+	shit = gmm_load(rgns, nrgns);
+	end_load();
 	if (shit) {
 		sched_yield();
-		goto re_attach;
+		goto reload;
 	}
 
 	// Process RW hints
@@ -395,12 +408,13 @@ re_attach:
 		nv_cudaSetupArgument(&dargs[i].dptr, 8, dargs[i].argoff);
 	}
 
-	// Now we can launch the kernel; rgns will be freed when the kernel
-	// finishes execution.
+	// Now we can launch the kernel
 	if (gmm_launch(entry, rgns, nrgns) < 0)
 		ret = cudaErrorUnknown;
 
 finish:
+	if (rgns)
+		free(rgns);
 	nrefs = 0;
 	nargs = 0;
 	iarg = 0;
@@ -899,46 +913,93 @@ static int gmm_dtoh(
 	return 0;
 }
 
-static int gmm_attach_all(struct dptr_arg *args, int n)
+// Load all $n regions specified by $rgns to device.
+// Every successfully loaded region is pinned to device.
+// If all regions cannot be loaded successfully, successfully
+// loaded regions will be unpinned so that they can be
+// replaced by other kernel launches.
+static int gmm_load(struct region **rgns, int n)
 {
+	char *pinned;
+	int i, ret;
+
+	if (!rgns || n <= 0)
+		return -1;
+
+	pinned = (char *)malloc(n);
+	if (!pinned) {
+		GMM_DPRINT("malloc failed for pinned array: %s\n", strerr(errno));
+		return -1;
+	}
+
+	/*
+	 * Load memory regions in three rounds:
+	 * first, load objects that are already in attached states;
+	 * then, load objects that are in detached states;
+	 * finally, load the rest, blocking for an object if it is
+	 * still being evicted.
+	 */
+	ret = gmm_load1(rgns, n, pinned);
+	if (ret)
+		goto fail;
+	ret = gmm_load2(rgns, n, pinned);
+	if (ret)
+		goto fail;
+	ret = gmm_load3(rgns, n, pinned);
+	if (ret)
+		goto fail;
+
+	free(pinned);
 	return 0;
+
+fail:
+	/* Unpin all memory regions pinned during the three rounds */
+	for (i = 0; i < n; i++)
+		if (pinned[i])
+			gmm_unpin(rgns[i]);
+	free(pinned);
+	return ret;
 }
 
 // The callback function invoked by CUDA after each kernel finishes
+// execution. Have to keep it as short as possible because it blocks
+// the following commands in the stream.
 void CUDART_CB gmm_kernel_callback(
 		cudaStream_t stream,
 		cudaError_t status,
 		void *data)
 {
-	struct region **rgns;
-	int i, nrgns;
-
-	acquire(&pcontext->kcb.lock);
-	if (kcb_get(&pcontext->kcb, &rgns, &nrgns) < 0)
-		panic("kcb_get");
-	release(&pcontext->kcb.lock);
-
-	for (i = 0; i < nrgns; i++)
-		gmm_unpin(rgns[i]);
-
-	free(rgns);
+	struct kcb *pcb = (struct kcb *)data;
+	int i;
+	for (i = 0; i < pcb->nrgns; i++)
+		gmm_unpin(pcb->rgns[i]);
+	free(pcb);
 }
 
+// Here we utilize CUDA 5.0's stream callback feature to capture kernel
+// finish event and unpin related regions accordingly.
 static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 {
-	int ret = 0;
+	struct kcb *pcb;
 
-	acquire(&pcontext->kcb.lock);
-	if (kcb_push(&pcontext->kcb, rgns, nrgns) < 0)
-		panic("kcb_push");
-	if (nv_cudaLaunch(entry) != cudaSuccess) {
-		kcb_pop(NULL, NULL);
-		ret = -1;
+	if (nrgns > NREFS) {
+		GMM_DPRINT("too many regions\n");
+		return -1;
 	}
-	else
-		cudaStreamAddCallback(pcontext->stream_kernel, gmm_kernel_callback,
-				NULL, 0);
-	release(&pcontext->kcb.lock);
 
-	return ret;
+	pcb = (struct kcb *)malloc(sizeof(*pcb));
+	if (!pcb) {
+		GMM_DPRINT("malloc failed for kcb: %s\n", strerr(errno));
+		return -1;
+	}
+	memcpy(&pcb->rgns, rgns, sizeof(void *) * nrgns);
+	pcb->nrgns = nrgns;
+
+	if (nv_cudaLaunch(entry) != cudaSuccess) {
+		free(pcb);
+		return -1;
+	}
+	cudaStreamAddCallback(stream_issue, gmm_kernel_callback, (void *)pcb, 0);
+
+	return 0;
 }

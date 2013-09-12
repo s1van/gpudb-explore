@@ -57,6 +57,9 @@ struct region {
 	struct list_head entry_attached;	// linked to the list of attached
 };
 
+// Maximum number of kernel arguments that may be device memory pointers
+#define NREFS		32
+
 // A kernel argument that is a device memory pointer
 struct dptr_arg {
 	struct region *r;		// the region this argument points to
@@ -65,13 +68,10 @@ struct dptr_arg {
 	unsigned long argoff;	// this argument's offset in the argument stack
 };
 
-#define NCALLBACKS		64
-struct kernel_callback {
-	struct spinlock lock;
-	struct region **rgns[NCALLBACKS];
-	int n[NCALLBACKS];
-	int head;
-	int tail;
+// Kernel callback structure
+struct kcb {
+	struct region *rgns[NREFS];
+	int nrgns;
 };
 
 // The local management info within each GMM client
@@ -81,10 +81,8 @@ struct gmm_context {
 	atomic_l_t size_attached;			// total size of attached mem regions
 	struct list_head list_alloced;		// list of all allocated mem regions
 	struct list_head list_attached;		// LRU list of attached mem regions
-
 	cudaStream_t stream_dma;			// The CUDA stream for DMA operations
 	cudaStream_t stream_kernel;			// The CUDA stream for kernel launches
-	struct kernel_callback kcb;
 };
 
 
@@ -92,11 +90,10 @@ struct gmm_context {
 #define BLOCKIDX(offset)	((unsigned long)(offset) / BLOCKSIZE)
 #define BLOCKUP(offset)		((offset + BLOCKSIZE) / BLOCKSIZE * BLOCKSIZE)
 
-// Maximum number of kernel arguments that may be device memory pointers
-#define NREFS		32
+#define region_pinned(r)	atomic_read(&(r)->pinned)
+#define region_pin(r)		atomic_inc(&(r)->pinned)
+#define region_unpin(r)		atomic_dec(&(r)->pinned)
 
-
-#define region_pinned(r)	atomic_read(&r->pinned)
 
 // Invalidate all blocks in a region
 static inline void inval_blocks(struct region *r, int swp)

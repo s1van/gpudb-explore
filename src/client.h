@@ -5,8 +5,8 @@
 int gmm_attach();
 void gmm_detach();
 
-void begin_attach();
-void end_attach();
+void begin_load();
+void end_load();
 
 long get_memsize();
 long get_free_memsize();

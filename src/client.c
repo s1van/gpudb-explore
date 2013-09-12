@@ -203,7 +203,7 @@ void update_detachable(long delta)
 	atomic_addl(&pglobal->clients[cid].size_detachable, delta);
 }
 
-void begin_attach()
+void begin_load()
 {
 	int ret;
 	do {
@@ -211,7 +211,7 @@ void begin_attach()
 	} while (ret == -1 && errno == EINTR);
 }
 
-void end_attach()
+void end_load()
 {
 	sem_post(&sem_attach);
 }
