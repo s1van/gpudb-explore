@@ -17,6 +17,9 @@ struct gmm_context {
 	atomic_l_t size_attached;			// total size of attached mem regions
 	struct list_head list_alloced;		// list of all allocated mem regions
 	struct list_head list_attached;		// LRU list of attached mem regions
+
+	cudaStream_t stream_dma;			// The CUDA stream for DMA operations
+	cudaStream_t stream_kernel;			// The CUDA stream for kernel launches
 };
 
 // State of a device memory region

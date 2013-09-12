@@ -40,6 +40,7 @@ static int gmm_dtoh(
 static int gmm_attach_all(struct dptr_arg *args, int n);
 
 
+// The GMM context for this process
 struct gmm_context *pcontext = NULL;
 
 
@@ -62,6 +63,21 @@ int gmm_context_init()
 	INIT_LIST_HEAD(&pcontext->list_alloced);
 	INIT_LIST_HEAD(&pcontext->list_attached);
 
+	if (cudaStreamCreate(&pcontext->stream_dma) != cudaSuccess) {
+		GMM_DPRINT("failed to create stream for dma\n");
+		free(pcontext);
+		pcontext = NULL;
+		return -1;
+	}
+
+	if (cudaStreamCreate(&pcontext->stream_kernel) != cudaSuccess) {
+		GMM_DPRINT("failed to create stream for kernel launch\n");
+		cudaStreamDestroy(pcontext->stream_dma);
+		free(pcontext);
+		pcontext = NULL;
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -69,6 +85,8 @@ void gmm_context_fini()
 {
 	// TODO: have to free all memory objects still attached to device
 
+	cudaStreamDestroy(pcontext->stream_dma);
+	cudaStreamDestroy(pcontext->stream_kernel);
 	free(pcontext);
 	pcontext = NULL;
 }
@@ -207,7 +225,7 @@ static int refs[NREFS];
 static int nrefs = 0;
 
 // New CUDA Interface: pass reference hints.
-// $which_arg tells which argument in the following
+// $which_arg tells which argument (starting with 0) in the following
 // cudaSetupArgument calls is a device memory pointer.
 //
 // The GMM runtime should expect to see the following call sequence:
@@ -248,7 +266,6 @@ cudaError_t gmm_cudaConfigureCall(
 // TODO: should prepare the following structures for each stream
 static struct dptr_arg dargs[NREFS];
 static int nargs = 0;
-
 static int iarg = 0;	// which argument current cudaSetupArgument refers to
 
 // CUDA pushes kernel arguments from left to right. For example, for a kernel
@@ -268,9 +285,12 @@ cudaError_t gmm_cudaSetupArgument(
 	cudaError_t ret;
 	int is_dptr = 0;
 
-	// Test whether this argument is a device memory pointer. If it is,
-	// record it and postpone its pushing until cudaLaunch.
-	// Use reference hints if given.
+	// Test whether this argument is a device memory pointer.
+	// If it is, record it and postpone its pushing until cudaLaunch.
+	// Use reference hints if given. Otherwise, parse automatically
+	// (but parsing errors are possible, e.g., when the user pass the
+	// long argument that happen to lay within some region's host swap
+	// buffer area).
 	if (nrefs > 0) {
 		int i;
 		for (i = 0; i < nrefs; i++) {
@@ -287,9 +307,6 @@ cudaError_t gmm_cudaSetupArgument(
 			is_dptr = 1;
 		}
 	}
-	// Otherwise, parse automatically (but parsing errors are possible, e.g.,
-	// when the user pass the long argument that happen to lay within some
-	// region's host swap buffer area).
 	else if (size == sizeof(void *)) {
 		r = region_lookup(pcontext, *(void **)arg);
 		if (r)
@@ -323,6 +340,9 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 	if (nargs <= 0 || nargs > NREFS)
 		panic("nargs");
 
+	// It is possible that multiple device pointers fall into
+	// the same region. So we need to get the list of unique
+	// regions referenced by the kernel being launched.
 	rgns = (struct region *)malloc(sizeof(struct region *) * NREFS);
 	if (!rgns) {
 		GMM_DPRINT("malloc failed for region array in gmm_cudaLaunch: %s\n", \
@@ -330,17 +350,14 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 		ret = cudaErrorLaunchOutOfResources;
 		goto finish;
 	}
-
-	// It is possible that multiple device pointers fall into the same region.
-	// Get the list of unique regions referenced by the kernel being launched.
 	for (i = 0; i < nargs; i++)
 		if (!is_included(rgns, nrgns, dargs[i].r))
 			rgns[nrgns++] = dargs[i].r;
 
 	// Attach all referenced regions. At any time, only one context
-	// is allowed to attach regions for kernel launch.
-	// This is to avoid deadlocks/livelocks caused by memory
-	// contentions from concurrent kernel launches.
+	// is allowed to attach regions for kernel launch. This is to
+	// avoid deadlocks/livelocks caused by memory contentions from
+	// concurrent kernel launches.
 	// TODO: Add kernel scheduling logic here.
 re_attach:
 	begin_attach();
@@ -375,6 +392,8 @@ cudaError_t gmm_cudaMemset(void * devPtr, int value, size_t count)
 
 }
 
+
+
 // The return value of this function tells whether the region has been
 // immediately freed. 0 - not freed yet; 1 - freed.
 static int gmm_free(struct region *r)
@@ -406,10 +425,7 @@ re_acquire:
 		sched_yield();
 		goto re_acquire;
 		break;
-	case STATE_DETACHED:
-		break;
-	default:
-		panic("unknown region state (in gmm_free)");
+	default: // STATE_DETACHED
 		break;
 	}
 	release(&r->lock);
@@ -431,19 +447,41 @@ re_acquire:
 	return 1;
 }
 
-// TODO
-static void gmm_memcpy_dtoh(void *dst, void *src, unsigned long size)
+// TODO: When to sync and how to sync needs to be re-thought thoroughly.
+static int gmm_memcpy_dtoh(void *dst, void *src, unsigned long size)
 {
-	// Use nv_cudaMemcpyAsync
+	if (nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyDeviceToHost,
+			pcontext->stream_dma) != cudaSuccess) {
+		GMM_DPRINT("DtoH (%lu, %p => %p) failed\n", size, src, dst);
+		return -1;
+	}
+
+	if (cudaStreamSynchronize(pcontext->stream_dma) != cudaSuccess) {
+		GMM_DPRINT("Sync over DMA stream failed\n");
+		return -1;
+	}
+
+	return 0;
 }
 
-// TODO
-static void gmm_memcpy_htod(void *dst, void *src, unsigned long size)
+// TODO: When to sync and how to sync needs to be re-thought thoroughly.
+static int gmm_memcpy_htod(void *dst, void *src, unsigned long size)
 {
-	// Use nv_cudaMemcpyAsync
+	if (nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyHostToDevice,
+			pcontext->stream_dma) != cudaSuccess) {
+		GMM_DPRINT("DtoH (%lu, %p => %p) failed\n", size, src, dst);
+		return -1;
+	}
+
+	if (cudaStreamSynchronize(pcontext->stream_dma) != cudaSuccess) {
+		GMM_DPRINT("Sync over DMA stream failed\n");
+		return -1;
+	}
+
+	return 0;
 }
 
-// Sync the host and device data copies of a block.
+// Sync the host and device copies of a data block.
 // The direction of sync is determined by current valid flags. Data are synced
 // from the valid copy to the invalid copy.
 static void gmm_block_sync(struct region *r, int block)
@@ -452,7 +490,7 @@ static void gmm_block_sync(struct region *r, int block)
 	int svalid = r->blocks[block].swp_valid;
 	unsigned long off1, off2;
 
-	// Nothing to sync if both are valid or invalid
+	// Nothing to sync if both are valid or both are invalid
 	if (dvalid ^ svalid == 0)
 		return;
 
@@ -744,8 +782,8 @@ static int gmm_htod(
 #endif
 
 static int gmm_dtoh_block(
-		void *dst,
 		struct region *r,
+		void *dst,
 		unsigned long off,
 		unsigned long size,
 		int iblock,
@@ -819,7 +857,7 @@ static int gmm_dtoh(
 	iblock = ifirst;
 	while (off < end) {
 		size = MIN(BLOCKUP(off), end) - off;
-		gmm_dtoh_block(dst, r, off, size, iblock, 1, skipped + iblock - ifirst);
+		gmm_dtoh_block(r, dst, off, size, iblock, 1, skipped + iblock - ifirst);
 		dst += size;
 		off += size;
 		iblock++;
@@ -831,7 +869,7 @@ static int gmm_dtoh(
 	while (off < end) {
 		size = MIN(BLOCKUP(off), end) - off;
 		if (skipped[iblock - ifirst])
-			gmm_dtoh_block(dst, r, off, size, iblock, 0, NULL);
+			gmm_dtoh_block(r, dst, off, size, iblock, 0, NULL);
 		dst += size;
 		off += size;
 		iblock++;
