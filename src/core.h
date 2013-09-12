@@ -10,18 +10,6 @@
 #include "atomic.h"
 
 
-// The local management info within each GMM client
-struct gmm_context {
-	struct spinlock lock;				// mutex for local synchronizations
-	//atomic_l_t size_alloced;			// total size of allocated mem regions
-	atomic_l_t size_attached;			// total size of attached mem regions
-	struct list_head list_alloced;		// list of all allocated mem regions
-	struct list_head list_attached;		// LRU list of attached mem regions
-
-	cudaStream_t stream_dma;			// The CUDA stream for DMA operations
-	cudaStream_t stream_kernel;			// The CUDA stream for kernel launches
-};
-
 // State of a device memory region
 typedef enum region_state {
 	STATE_ATTACHED = 0,		// object allocated with device memory
@@ -31,7 +19,9 @@ typedef enum region_state {
 	STATE_EVICTED
 } region_state_t;
 
-// Hints passed to a device memory region
+// Hints passed to a device memory region.
+// TODO: RW hints can be very delicate. For example, if DB knows a kernel
+// only modifies part of a region, it can pass GMM a RW hint with the range.
 struct rgn_hint {
 	// RW
 	int rw_static;
@@ -75,6 +65,28 @@ struct dptr_arg {
 	unsigned long argoff;	// this argument's offset in the argument stack
 };
 
+#define NCALLBACKS		64
+struct kernel_callback {
+	struct spinlock lock;
+	struct region **rgns[NCALLBACKS];
+	int n[NCALLBACKS];
+	int head;
+	int tail;
+};
+
+// The local management info within each GMM client
+struct gmm_context {
+	struct spinlock lock;				// mutex for local synchronizations
+	//atomic_l_t size_alloced;			// total size of allocated mem regions
+	atomic_l_t size_attached;			// total size of attached mem regions
+	struct list_head list_alloced;		// list of all allocated mem regions
+	struct list_head list_attached;		// LRU list of attached mem regions
+
+	cudaStream_t stream_dma;			// The CUDA stream for DMA operations
+	cudaStream_t stream_kernel;			// The CUDA stream for kernel launches
+	struct kernel_callback cb_kernel;
+};
+
 
 #define NRBLOCKS(size)		(((size) + BLOCKSIZE - 1) / BLOCKSIZE)
 #define BLOCKIDX(offset)	((unsigned long)(offset) / BLOCKSIZE)
@@ -82,6 +94,39 @@ struct dptr_arg {
 
 // Maximum number of kernel arguments that may be device memory pointers
 #define NREFS		32
+
+
+#define region_pinned(r)	atomic_read(&r->pinned)
+
+// Invalidate all blocks in a region
+static inline void inval_blocks(struct region *r, int swp)
+{
+	int i;
+
+	if (swp) {
+		for (i = 0; i < NRBLOCKS(r->size); i++)
+			r->blocks[i].swp_valid = 0;
+	}
+	else {
+		for (i = 0; i < NRBLOCKS(r->size); i++)
+			r->blocks[i].dev_valid = 0;
+	}
+}
+
+// Validate all blocks in a region
+static inline void val_blocks(struct region *r, int swp)
+{
+	int i;
+
+	if (swp) {
+		for (i = 0; i < NRBLOCKS(r->size); i++)
+			r->blocks[i].swp_valid = 1;
+	}
+	else {
+		for (i = 0; i < NRBLOCKS(r->size); i++)
+			r->blocks[i].dev_valid = 1;
+	}
+}
 
 
 // Functions exposed by GMM core

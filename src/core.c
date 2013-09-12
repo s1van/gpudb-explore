@@ -333,7 +333,8 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 	cudaError_t ret = cudaSuccess;
 	struct region **rgns = NULL;
 	int nrgns = 0;
-	int i, shit;
+	long totsize = 0;
+	int i, j, shit;
 
 	if (nrefs > NREFS)
 		panic("nrefs");
@@ -350,9 +351,19 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 		ret = cudaErrorLaunchOutOfResources;
 		goto finish;
 	}
-	for (i = 0; i < nargs; i++)
-		if (!is_included(rgns, nrgns, dargs[i].r))
+	for (i = 0; i < nargs; i++) {
+		if (!is_included(rgns, nrgns, dargs[i].r)) {
 			rgns[nrgns++] = dargs[i].r;
+			totsize += dargs[i].r->size;
+		}
+	}
+	if (totsize > get_free_memsize()) {
+		GMM_DPRINT("kernel requires too much device memory space (%ld)\n", \
+				totsize);
+		free(rgns);
+		ret = cudaErrorInvalidConfiguration;
+		goto finish;
+	}
 
 	// Attach all referenced regions. At any time, only one context
 	// is allowed to attach regions for kernel launch. This is to
@@ -369,6 +380,14 @@ re_attach:
 	}
 
 	// Process RW hints
+	for (i = 0; i < nrgns; i++) {
+		if (rgns[i]->hint.rw_dynmic < 0)
+			rgns[i]->hint.rw_dynmic = rgns[i]->hint.rw_static;
+		if (rgns[i]->hint.rw_dynmic & HINT_WRITE) {
+			inval_blocks(rgns[i], 1);
+			val_blocks(rgns[i], 0);
+		}
+	}
 
 	// Push all device pointer arguments
 	for (i = 0; i < nargs; i++) {
@@ -378,7 +397,8 @@ re_attach:
 
 	// Now we can launch the kernel; rgns will be freed when the kernel
 	// finishes execution.
-	ret = gmm_launch(entry, rgns, nrgns);
+	if (gmm_launch(entry, rgns, nrgns) < 0)
+		ret = cudaErrorUnknown;
 
 finish:
 	nrefs = 0;
@@ -882,4 +902,44 @@ static int gmm_dtoh(
 static int gmm_attach_all(struct dptr_arg *args, int n)
 {
 	return 0;
+}
+
+// The callback function invoked by CUDA after each kernel finishes
+void CUDART_CB gmm_kernel_callback(
+		cudaStream_t stream,
+		cudaError_t status,
+		void *data)
+{
+	struct region **rgns;
+	int i, nrgns;
+
+	acquire(&pcontext->cb_kernel.lock);
+	if (cb_get(&pcontext->cb_kernel, &rgns, &nrgns) < 0)
+		panic("cb_get");
+	release(&pcontext->cb_kernel.lock);
+
+	for (i = 0; i < nrgns; i++)
+		gmm_unpin(rgns[i]);
+
+	free(rgns);
+}
+
+static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
+{
+	int ret = 0;
+
+	acquire(&pcontext->cb_kernel.lock);
+	if (cb_push(&pcontext->cb_kernel, rgns, nrgns) < 0)
+		panic("cb_put");
+	if (nv_cudaLaunch(entry) != cudaSuccess) {
+		cb_pop(NULL, NULL);
+		ret = -1;
+	}
+	else {
+		cudaStreamAddCallback(pcontext->stream_kernel, gmm_kernel_callback,
+				NULL, 0);
+	}
+	release(&pcontext->cb_kernel.lock);
+
+	return ret;
 }

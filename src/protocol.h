@@ -5,6 +5,7 @@
 
 #include <unistd.h>
 #include "list.h"
+#include "spinlock.h"
 #include "atomic.h"
 
 // The maximum number of concurrent processes managed by GMM
@@ -35,7 +36,7 @@ struct gmm_global {
 								// coherence protocol works for virutal caches
 								// as well.
 	long mem_total;				// Total size of device memory
-	atomic_l_t size_attached;	// Size of used (attached) device memory
+	atomic_l_t mem_used;		// Size of used (attached) device memory
 								// NOTE: in numbers, device memory may be
 								// over-used, i.e., mem_used > mem_total
 
@@ -46,8 +47,8 @@ struct gmm_global {
 	struct gmm_client clients[NCLIENTS];
 };
 
-#define GMM_SEM_NAME	"/_gmm_semaphore4_"
-#define GMM_SHM_NAME	"/_gmm_sharedmem4_"
+#define GMM_SEM_NAME	"/gmm_semaphore"
+#define GMM_SHM_NAME	"/gmm_sharedmem"
 
 // Add the inew'th client to the MRU end of p's client list
 static inline void ILIST_ADD(struct gmm_global *p, int inew)

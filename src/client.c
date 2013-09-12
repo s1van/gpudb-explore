@@ -8,7 +8,7 @@
 #include "protocol.h"
 
 
-sem_t sem_global = SEM_FAILED;
+sem_t sem_attach = SEM_FAILED;
 struct gmm_global *pglobal = NULL;
 int cid = -1;
 
@@ -31,7 +31,6 @@ static void free_client(int id)
 {
 	char qname[16];
 
-	// Unlink message queues
 	if (mqid_request != (mqd_t) -1) {
 		sprintf(qname, "/gr_%d", pglobal->clients[id].pid);
 		mq_unlink(qname);
@@ -46,22 +45,13 @@ static void free_client(int id)
 		mqid_notify = (mqd_t)-1;
 	}
 
-	if (sem_wait(sem_global) == -1) {
-		GMM_DPRINT("failed to P global semaphore: %s\n", strerror(errno));
-		return;
-	}
-
-	// Remove it from the client list and reset its content
+	// Remove this client from global client list
+	acquire(&pglobal->lock);
 	ILIST_DEL(pglobal, id);
 	pglobal->nclients--;
 	//memset(pglobal->clients + id, 0, sizeof(pglobal->clients[0]));
 	pglobal->clients[id].index = -1;
-
-	if (sem_post(sem_global) == -1) {
-		GMM_DPRINT("failed to V global semaphore: %s\n", strerror(errno));
-		free_client(id);
-		return;
-	}
+	release(&pglobal->lock);
 }
 
 // Allocate a new client slot for the calling process
@@ -70,20 +60,15 @@ static int alloc_client()
 	char qname[16];
 	int id = -1;
 
-	if (sem_wait(sem_global) == -1) {
-		GMM_DPRINT("failed to P global semaphore: %s\n", strerror(errno));
-		return -1;
-	}
-
-	// TODO: improve with a better client id search scheme
-	if (pglobal->nclients < pglobal->maxclients)
+	// Get a unique client id
+	acquire(&pglobal->lock);
+	if (pglobal->nclients < pglobal->maxclients) {
 		for (id = 0; id < pglobal->maxclients; id++) {
 			if (pglobal->clients[id].index == -1) {
 				break;
 			}
 		}
-
-	// Claim the client id and initialize its content
+	}
 	if (id >= 0 && id < pglobal->maxclients) {
 		memset(pglobal->clients + id, 0, sizeof(pglobal->clients[0]));
 		pglobal->clients[id].index = id;
@@ -91,13 +76,7 @@ static int alloc_client()
 		ILIST_ADD(pglobal, id);
 		pglobal->nclients++;
 	}
-
-	// The rest of initialization can be done outside the semaphore
-	if (sem_post(sem_global) == -1) {
-		perror("Failed to V global semaphore");
-		free_client(id);
-		return -1;
-	}
+	release(&pglobal->lock);
 
 	// Allocate request and notification message queues
 	if (id >= 0 && id < pglobal->maxclients) {
@@ -137,8 +116,8 @@ int gmm_attach()
 	int shmfd;
 
 	// Get the semaphore
-	sem_global = sem_open(GMM_SEM_NAME, 0);
-	if (sem_global == SEM_FAILED) {
+	sem_attach = sem_open(GMM_SEM_NAME, 0);
+	if (sem_attach == SEM_FAILED) {
 		GMM_DPRINT("unable to open semaphore: %s\n", strerror(errno));
 		return -1;
 	}
@@ -177,7 +156,7 @@ fail_mmap:
 	close(shmfd);
 fail_shm:
 	sem_close(GMM_SEM_NAME);
-	sem_global = SEM_FAILED;
+	sem_attach = SEM_FAILED;
 
 	return -1;
 }
@@ -192,9 +171,9 @@ void gmm_detach() {
 		munmap(pglobal, sizeof(*pglobal));
 		pglobal = NULL;
 	}
-	if (sem_global != SEM_FAILED) {
+	if (sem_attach != SEM_FAILED) {
 		sem_close(GMM_SEM_NAME);
-		sem_global = SEM_FAILED;
+		sem_attach = SEM_FAILED;
 	}
 }
 
@@ -224,3 +203,15 @@ void update_detachable(long delta)
 	atomic_addl(&pglobal->clients[cid].size_detachable, delta);
 }
 
+void begin_attach()
+{
+	int ret;
+	do {
+		ret = sem_wait(&sem_attach);
+	} while (ret == -1 && errno == EINTR);
+}
+
+void end_attach()
+{
+	sem_post(&sem_attach);
+}

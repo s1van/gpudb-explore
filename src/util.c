@@ -53,5 +53,3 @@ struct region *region_lookup(struct gmm_context *ctx, const void *ptr)
 
 	return r;
 }
-
-

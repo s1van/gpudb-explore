@@ -9,7 +9,7 @@
 #include <string.h>
 #include <cuda.h>
 
-#include "gmm_protocol.h"
+#include "protocol.h"
 
 int start_gmm()
 {
@@ -30,7 +30,7 @@ int start_gmm()
 	fprintf(stderr, "Size of free GPU memory: %u bytes.\n", free);
 	fprintf(stderr, "Setting GMM global state...\n");
 
-	// Create the semaphore for syncing access to shared memory
+	// Create the semaphore for syncing kernel launches
 	sem = sem_open(GMM_SEM_NAME, O_CREAT | O_EXCL, 0666, 1);
 	if (sem == SEM_FAILED && errno == EEXIST) {
 		perror("Semaphore already exists; have to unlink it and link again");
@@ -52,6 +52,8 @@ int start_gmm()
 	sem_close(sem);
 
 	// Create, truncate, and initialize the shared memory
+	// TODO: a better procedure is to disable access to shared memory first
+	// (by setting permission), set up content, and then enable access.
 	shmfd = shm_open(GMM_SHM_NAME, O_RDWR | O_CREAT | O_EXCL, 0644);
 	if (shmfd == -1 && errno == EEXIST) {
 		perror("Shared memory already exists; unlink it and link again");
@@ -82,8 +84,9 @@ int start_gmm()
 		goto fail_mmap;
 	}
 
+	initlock(&pglobal->lock);
 	pglobal->mem_total = total;
-	pglobal->mem_used = 0;
+	atomic_setl(&pglobal->mem_used, 0);
 	pglobal->maxclients = NCLIENTS;
 	pglobal->nclients = 0;
 	pglobal->ilru = pglobal->imru = -1;
@@ -94,8 +97,7 @@ int start_gmm()
 		pglobal->clients[i].list_client.prev = -1;
 	}
 
-	// Now we can unmap and close the shared memory; then we're done!
-	munmap(pglobal, sizeof(*pglobal));	// or maybe we can skip unmapping
+	munmap(pglobal, sizeof(*pglobal));
 	close(shmfd);
 
 	fprintf(stderr, "Setting done!\nPlease restart all processes using GMM.\n");
