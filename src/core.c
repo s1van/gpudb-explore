@@ -38,7 +38,7 @@ static int gmm_dtoh(
 		const void *src,
 		size_t count);
 static int gmm_load(struct region **rgns, int nrgns);
-
+static int gmm_launch(const char *entry, struct region **rgns, int nrgns);
 
 // The GMM context for this process
 struct gmm_context *pcontext = NULL;
@@ -382,7 +382,11 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 	// is allowed to load regions for kernel launch. This is to
 	// avoid deadlocks/livelocks caused by memory contentions from
 	// concurrent kernel launches.
-	// TODO: Add kernel scheduling logic here.
+	// TODO: Add kernel scheduling logic here. The order of loadings
+	// plays an important role for fully overlapping kernel executions
+	// and DMAs. Ideally, kernels with nothing to load should be issued
+	// first. Then the loadings of other kernels can be overlapped with
+	// kernel executions.
 reload:
 	begin_load();
 	shit = gmm_load(rgns, nrgns);
@@ -393,12 +397,13 @@ reload:
 	}
 
 	// Process RW hints
+	// TODO: the handling of RW hints needs to be re-organized
 	for (i = 0; i < nrgns; i++) {
 		if (rgns[i]->hint.rw_dynmic < 0)
 			rgns[i]->hint.rw_dynmic = rgns[i]->hint.rw_static;
 		if (rgns[i]->hint.rw_dynmic & HINT_WRITE) {
-			inval_blocks(rgns[i], 1);
-			val_blocks(rgns[i], 0);
+			blocks_inval(rgns[i], 1);
+			blocks_val(rgns[i], 0);
 		}
 	}
 
@@ -409,8 +414,15 @@ reload:
 	}
 
 	// Now we can launch the kernel
-	if (gmm_launch(entry, rgns, nrgns) < 0)
+	if (gmm_launch(entry, rgns, nrgns) < 0) {
+		for (i = 0; i < nrgns; i++)
+			region_unpin(rgns[i]);
 		ret = cudaErrorUnknown;
+	}
+
+	// Reset RW hints
+	for (i = 0; i < nrgns; i++)
+		rgns[i]->hint.rw_dynmic = -1;
 
 finish:
 	if (rgns)
@@ -913,6 +925,7 @@ static int gmm_dtoh(
 	return 0;
 }
 
+/*
 static int gmm_load1(struct region **rgns, int n)
 {
 	return 0;
@@ -927,10 +940,45 @@ static int gmm_load3(struct region **rgns, int n)
 {
 	return 0;
 }
+*/
+
+// Load a region to device memory.
+static int gmm_load_region(
+		struct region *r,
+		int pin,
+		struct region **excls,
+		int nexcl)
+{
+	int i, ret;
+
+	if (r->state == STATE_EVICTING) {
+		GMM_DPRINT("should not see evicting region during kernel launch\n");
+		return -1;
+	}
+
+	// Attach if the region is still detached
+	if (r->state == STATE_DETACHED) {
+		ret = gmm_attach_region(r, 1, excls, nexcl);
+		if (ret)
+			return ret;
+	}
+	else
+		region_pin(r);
+
+	// Fetch missing data to device memory if necessary
+	if (r->hint.rw_dynmic & HINT_READ) {
+		for (i = 0; i < NRBLOCKS(r->size); i++) {
+			if (!r->blocks[i].dev_valid)
+				gmm_block_sync(r, i);
+		}
+	}
+
+	return 0;
+}
 
 // Load all $n regions specified by $rgns to device.
 //
-// Load memory regions in three rounds:
+// Memory region loadings happen in three stages:
 //   first, load objects that are already in attached states;
 //   then, load objects that are in detached states;
 //   finally, load the rest, blocking for an object if it is
@@ -948,14 +996,23 @@ static int gmm_load(struct region **rgns, int n)
 	if (!rgns || n <= 0)
 		return -1;
 
-	pinned = (char *)zalloc(n);
+	pinned = (char *)malloc(n);
 	if (!pinned) {
 		GMM_DPRINT("malloc failed for pinned array: %s\n", strerr(errno));
 		return -1;
 	}
 	memset(pinned, 0, n);
 
-	ret = gmm_load1(rgns, n, pinned);
+	for (i = 0; i < n; i++) {
+		acquire(&rgns[i]->lock);
+		ret = gmm_load_region(rgns[i], 1, rgns, n);
+		release(&rgns[i]->lock);
+		if (ret)
+			goto fail;
+		pinned[i] = 1;
+	}
+
+/*	ret = gmm_load1(rgns, n, pinned);
 	if (ret)
 		goto fail;
 	ret = gmm_load2(rgns, n, pinned);
@@ -964,6 +1021,7 @@ static int gmm_load(struct region **rgns, int n)
 	ret = gmm_load3(rgns, n, pinned);
 	if (ret)
 		goto fail;
+*/
 
 	free(pinned);
 	return 0;
@@ -971,7 +1029,7 @@ static int gmm_load(struct region **rgns, int n)
 fail:
 	for (i = 0; i < n; i++)
 		if (pinned[i])
-			gmm_unpin(rgns[i]);
+			region_unpin(rgns[i]);
 	free(pinned);
 	return ret;
 }
@@ -987,7 +1045,7 @@ void CUDART_CB gmm_kernel_callback(
 	struct kcb *pcb = (struct kcb *)data;
 	int i;
 	for (i = 0; i < pcb->nrgns; i++)
-		gmm_unpin(pcb->rgns[i]);
+		region_unpin(pcb->rgns[i]);
 	free(pcb);
 }
 
