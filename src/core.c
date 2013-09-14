@@ -219,39 +219,6 @@ cudaError_t gmm_cudaMemcpyDtoH(
 	return cudaSuccess;
 }
 
-// For passing reference hints before each kernel launch
-// TODO: should prepare the following structures for each stream
-static int refs[NREFS];
-static int nrefs = 0;
-
-// New CUDA Interface: pass reference hints.
-// $which_arg tells which argument (starting with 0) in the following
-// cudaSetupArgument calls is a device memory pointer.
-//
-// The GMM runtime should expect to see the following call sequence:
-// cudaReference, ..., cudaReference, cudaConfigureCall, cudaSetupArgument,
-// ..., cudaSetupArgument, cudaLaunch
-//
-cudaError_t cudaReference(int which_arg)
-{
-	int i;
-
-	if (which_arg < NREFS) {
-		for (i = 0; i < nrefs; i++) {
-			if (refs[i] == which_arg)
-				break;
-		}
-		if (i == nrefs)
-			refs[nrefs++] = which_arg;
-	}
-	else {
-		GMM_DPRINT("bad reference hint %d (max %d)\n", which_arg, NREFS-1);
-		return cudaErrorInvalidValue;
-	}
-
-	return cudaSuccess;
-}
-
 // Which stream is the upcoming kernel to be issued to?
 static cudaStream_t stream_issue = 0;
 
@@ -272,6 +239,10 @@ cudaError_t gmm_cudaConfigureCall(
 	stream_issue = pcontext->stream_kernel;
 	return nv_cudaConfigureCall(gridDim, blockDim, sharedMem, stream_issue);
 }
+
+// Reference hints passed for a kernel launch
+extern int refs[NREFS];
+extern int nrefs;
 
 // The regions referenced by the following kernel to be launched
 // TODO: should prepare the following structures for each stream
@@ -315,7 +286,7 @@ cudaError_t gmm_cudaSetupArgument(
 				panic("cudaSetupArgument");
 			r = region_lookup(pcontext, *(void **)arg);
 			if (!r)
-				// TODO: report error less aggressively
+				// TODO: report error more gracefully
 				panic("region_lookup in cudaSetupArgument");
 			is_dptr = 1;
 		}
@@ -925,6 +896,149 @@ static int gmm_dtoh(
 	return 0;
 }
 
+// Select victims for $size_needed bytes of free device memory space.
+// $excls[0:$nexcl) are local regions that should not be selected.
+// Put selected victims in the list $victims.
+int victim_select(
+		long size_needed,
+		struct region **excls,
+		int nexcl,
+		struct list_head *victims)
+{
+	return 0;
+}
+
+// Evict the victim $victim.
+// $victim may point to a local region or a remote client that
+// owns the region.
+int victim_evict(struct victim *victim, long size_needed)
+{
+	return 0;
+}
+
+static int gmm_evict(long size_needed, struct region **excls, int nexcl)
+{
+	struct list_head victims, *e;
+	struct victim *v;
+
+	INIT_LIST_HEAD(&victims);
+
+	do {
+		if (victim_select(size_needed, excls, nexcl, &victims) < 0)
+			return -1;
+
+		list_for_each(e, &victims) {
+			v = list_entry(e, struct victim, entry);
+			if (get_free_memsize() < size_needed) {
+				if (victim_evict(v, size_needed) < 0)
+					goto fail_evict;
+			}
+			else if (v->r) {
+				acquire(&v->r->lock);
+				if (v->r->state != STATE_FREEING)
+					v->r->state = STATE_ATTACHED;
+				release(&v->r->lock);
+			}
+			list_del(e);
+			free(v);
+		}
+	} while (get_free_memsize() < size_needed);
+
+	return 0;
+
+fail_evict:
+	list_for_each(e, &victims) {
+		v = list_entry(e, struct victim, entry);
+		if (v->r) {
+			acquire(&v->r->lock);
+			if (v->r->state != STATE_FREEING)
+				v->r->state = STATE_ATTACHED;
+			release(&v->r->lock);
+		}
+		list_del(e);
+		free(v);
+	}
+
+	return -1;
+}
+
+// Allocate device memory to a region (i.e., attach).
+static int region_attach(
+		struct region *r,
+		int pin,
+		struct region **excls,
+		int nexcl)
+{
+	int i;
+
+	if (r->state != STATE_DETACHED) {
+		GMM_DPRINT("nothing to attach\n");
+		return -1;
+	}
+
+	// Attach if current free memory space is larger than region size
+	if (r->size <= get_free_memsize() &&
+		nv_cudaMalloc(&r->addr_dev, r->size) == cudaSuccess)
+		goto attach_success;
+
+	// Evict some device memory
+	if (gmm_evict(r->size, excls, nexcl) < 0 && r->size > get_free_memsize())
+		return -1;
+
+	// Try to attach again
+	if (nv_cudaMalloc(&r->addr_dev, r->size) != cudaSuccess) {
+		r->addr_dev = NULL;
+		return -1;
+	}
+
+attach_success:
+	update_attached(r->size);
+	atomic_addl(&pcontext->size_attached, r->size);
+	if (pin)
+		region_pin(r);
+	// Reassure that the dev copies of all blocks are invalid
+	for (i = 0; i < NRBLOCKS(r->size); i++)
+		r->blocks[i].dev_valid = 0;
+	r->state = STATE_ATTACHED;
+	list_attached_add(r);
+
+	return 0;
+}
+
+// Load a region to device memory.
+// excls[0:nexcl) are regions that should not be evicted when
+// evictions need to happen during the loading.
+static int region_load(
+		struct region *r,
+		int pin,
+		struct region **excls,
+		int nexcl)
+{
+	int i;
+
+	if (r->state == STATE_EVICTING || r->state == STATE_FREEING) {
+		GMM_DPRINT("should not see evicting/freeing region\n");
+		return -1;
+	}
+
+	// Attach if the region is still detached
+	if (r->state == STATE_DETACHED)
+		if (region_attach(r, 1, excls, nexcl) == -1)
+			return -1;
+	else
+		region_pin(r);
+
+	// Fetch data to device memory if necessary
+	if (r->hint.rw_dynmic & HINT_READ) {
+		for (i = 0; i < NRBLOCKS(r->size); i++) {
+			if (!r->blocks[i].dev_valid)
+				gmm_block_sync(r, i);
+		}
+	}
+
+	return 0;
+}
+
 /*
 static int gmm_load1(struct region **rgns, int n)
 {
@@ -941,40 +1055,6 @@ static int gmm_load3(struct region **rgns, int n)
 	return 0;
 }
 */
-
-// Load a region to device memory.
-static int gmm_load_region(
-		struct region *r,
-		int pin,
-		struct region **excls,
-		int nexcl)
-{
-	int i, ret;
-
-	if (r->state == STATE_EVICTING) {
-		GMM_DPRINT("should not see evicting region during kernel launch\n");
-		return -1;
-	}
-
-	// Attach if the region is still detached
-	if (r->state == STATE_DETACHED) {
-		ret = gmm_attach_region(r, 1, excls, nexcl);
-		if (ret)
-			return ret;
-	}
-	else
-		region_pin(r);
-
-	// Fetch missing data to device memory if necessary
-	if (r->hint.rw_dynmic & HINT_READ) {
-		for (i = 0; i < NRBLOCKS(r->size); i++) {
-			if (!r->blocks[i].dev_valid)
-				gmm_block_sync(r, i);
-		}
-	}
-
-	return 0;
-}
 
 // Load all $n regions specified by $rgns to device.
 //
@@ -1004,10 +1084,13 @@ static int gmm_load(struct region **rgns, int n)
 	memset(pinned, 0, n);
 
 	for (i = 0; i < n; i++) {
+		if (rgns[i]->state == STATE_FREEING)
+			continue;
+		// NOTE: In current design, this locking is redundant
 		acquire(&rgns[i]->lock);
-		ret = gmm_load_region(rgns[i], 1, rgns, n);
+		ret = region_load(rgns[i], 1, rgns, n);
 		release(&rgns[i]->lock);
-		if (ret)
+		if (ret < 0)
 			goto fail;
 		pinned[i] = 1;
 	}

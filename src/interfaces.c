@@ -573,3 +573,37 @@ cudaError_t cudaLaunch(const char *entry)
 //	pthread_create(pt, NULL,  cudaLaunch_bh, args);
 }
 
+// For passing reference hints before each kernel launch
+// TODO: should prepare the following structures for each stream
+int refs[NREFS];
+int nrefs = 0;
+
+// New CUDA Interface: pass reference hints.
+// $which_arg tells which argument (starting with 0) in the following
+// cudaSetupArgument calls is a device memory pointer.
+//
+// The GMM runtime should expect to see the following call sequence:
+// cudaReference, ..., cudaReference, cudaConfigureCall, cudaSetupArgument,
+// ..., cudaSetupArgument, cudaLaunch
+//
+GMM_EXPORT
+cudaError_t cudaReference(int which_arg)
+{
+	int i;
+
+	if (which_arg < NREFS) {
+		for (i = 0; i < nrefs; i++) {
+			if (refs[i] == which_arg)
+				break;
+		}
+		if (i == nrefs)
+			refs[nrefs++] = which_arg;
+	}
+	else {
+		GMM_DPRINT("bad reference hint %d (max %d)\n", which_arg, NREFS-1);
+		return cudaErrorInvalidValue;
+	}
+
+	return cudaSuccess;
+}
+

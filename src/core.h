@@ -85,6 +85,13 @@ struct gmm_context {
 	cudaStream_t stream_kernel;			// The CUDA stream for kernel launches
 };
 
+// A victim region for being evicted
+struct victim {
+	struct region *r;		// for a local victim
+	int client;				// for a remote victim
+	struct list_head entry;
+};
+
 
 #define NRBLOCKS(size)		(((size) + BLOCKSIZE - 1) / BLOCKSIZE)
 #define BLOCKIDX(offset)	((unsigned long)(offset) / BLOCKSIZE)
