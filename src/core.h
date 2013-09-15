@@ -103,7 +103,7 @@ struct victim {
 
 
 // Invalidate all blocks in a region
-static inline void inval_blocks(struct region *r, int swp)
+static inline void region_inval(struct region *r, int swp)
 {
 	int i;
 
@@ -118,7 +118,7 @@ static inline void inval_blocks(struct region *r, int swp)
 }
 
 // Validate all blocks in a region
-static inline void val_blocks(struct region *r, int swp)
+static inline void region_val(struct region *r, int swp)
 {
 	int i;
 

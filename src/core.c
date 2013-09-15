@@ -897,8 +897,8 @@ static int gmm_dtoh(
 }
 
 // Select victims for $size_needed bytes of free device memory space.
-// $excls[0:$nexcl) are local regions that should not be selected.
-// Put selected victims in the list $victims.
+// %excls[0:%nexcl) are local regions that should not be selected.
+// Put selected victims in the list %victims.
 int victim_select(
 		long size_needed,
 		struct region **excls,
@@ -926,8 +926,7 @@ static int gmm_evict(long size_needed, struct region **excls, int nexcl)
 	do {
 		if (victim_select(size_needed, excls, nexcl, &victims) < 0)
 			return -1;
-
-		list_for_each(e, &victims) {
+		for (e = victims.next; e != (&victims); ) {
 			v = list_entry(e, struct victim, entry);
 			if (get_free_memsize() < size_needed) {
 				if (victim_evict(v, size_needed) < 0)
@@ -940,6 +939,7 @@ static int gmm_evict(long size_needed, struct region **excls, int nexcl)
 				release(&v->r->lock);
 			}
 			list_del(e);
+			e = e->next;
 			free(v);
 		}
 	} while (get_free_memsize() < size_needed);
@@ -947,7 +947,7 @@ static int gmm_evict(long size_needed, struct region **excls, int nexcl)
 	return 0;
 
 fail_evict:
-	list_for_each(e, &victims) {
+	for (e = victims.next; e != (&victims); ) {
 		v = list_entry(e, struct victim, entry);
 		if (v->r) {
 			acquire(&v->r->lock);
@@ -956,6 +956,7 @@ fail_evict:
 			release(&v->r->lock);
 		}
 		list_del(e);
+		e = e->next;
 		free(v);
 	}
 
@@ -996,9 +997,8 @@ attach_success:
 	atomic_addl(&pcontext->size_attached, r->size);
 	if (pin)
 		region_pin(r);
-	// Reassure that the dev copies of all blocks are invalid
-	for (i = 0; i < NRBLOCKS(r->size); i++)
-		r->blocks[i].dev_valid = 0;
+	// Reassure that the dev copies of all blocks are set to invalid
+	region_inval(r, 0);
 	r->state = STATE_ATTACHED;
 	list_attached_add(r);
 
