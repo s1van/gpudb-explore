@@ -8,6 +8,7 @@
 #include "client.h"
 #include "core.h"
 #include "util.h"
+#include "replacement.h"
 
 
 // CUDA function handlers, defined in gmm_interfaces.c
@@ -896,7 +897,7 @@ static int gmm_dtoh(
 	return 0;
 }
 
-// Select victims for $size_needed bytes of free device memory space.
+// Select victims for %size_needed bytes of free device memory space.
 // %excls[0:%nexcl) are local regions that should not be selected.
 // Put selected victims in the list %victims.
 int victim_select(
@@ -905,7 +906,18 @@ int victim_select(
 		int nexcl,
 		struct list_head *victims)
 {
-	return 0;
+	int ret = 0;
+
+#if defined(GMM_REPLACEMENT_LRU)
+	ret = victim_select_lru(size_needed, excls, nexcl, victims);
+#elif defined(GMM_REPLACEMENT_LFU)
+	ret = victim_select_lfu(size_needed, excls, nexcl, victims);
+#else
+	panic("replacement policy not specified");
+	ret = -1;
+#endif
+
+	return ret;
 }
 
 // Evict the victim $victim.
