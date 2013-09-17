@@ -2,17 +2,24 @@
 #define _GMM_CLIENT_H_
 
 // Functions exposed to client-side code to interact with global shared memory
-int gmm_attach();
-void gmm_detach();
+int client_attach();
+void client_detach();
 
 void begin_load();
 void end_load();
 
-long get_memsize();
-long get_free_memsize();
-long get_free_memsize_signed();
+long memsize();
+long free_memsize();
+long free_memsize2();
 
 void update_attached(long delta);
 void update_detachable(long delta);
+
+int client_lru_detachable();
+void client_unpin(int client);
+
+int is_client_local(int client);
+
+int remote_victim_evict(int client, long size_needed);
 
 #endif

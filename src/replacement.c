@@ -3,8 +3,6 @@
 #include "protocol.h"
 #include "util.h"
 
-extern struct gmm_global *pglobal;
-extern int cid;
 extern struct gmm_context *pcontext;
 
 
@@ -63,29 +61,17 @@ int victim_select_lru(
 	struct victim *v;
 	int iclient;
 
-	// Get the least recently used client
-	acquire(&pglobal->lock);
-	for (iclient = pglobal->ilru; iclient != -1;
-			iclient = pglobal->clients[iclient].iprev) {
-		if (pglobal->clients[iclient].size_detachable > 0)
-			break;
-	}
-	if (iclient != -1 && iclient != cid)
-		pglobal->clients[iclient].pin++;
-	release(&pglobal->lock);
-
+	iclient = client_lru_detachable();
 	if (iclient == -1)
 		return -1;
 
 	// If the LRU client is a remote client, record its client id;
 	// otherwise, select the LRU region in the local context immediately.
-	if (iclient != cid) {
+	if (!is_client_local(iclient)) {
 		v = (struct victim *)malloc(*v);
 		if (!v) {
 			GMM_DPRINT("malloc failed for a new victim: %s\n", strerr(errno));
-			acquire(&pglobal->lock);
-			pglobal->clients[iclient].pin--;
-			release(&pglobal->lock);
+			client_unpin(iclient);
 			return -1;
 		}
 		v->r = NULL;

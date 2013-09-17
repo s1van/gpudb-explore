@@ -63,7 +63,9 @@ int gmm_context_init()
 	//pcontext->size_alloced = 0;
 	pcontext->size_attached = 0;
 	INIT_LIST_HEAD(&pcontext->list_alloced);
+	initlock(&pcontext->lock_alloced);
 	INIT_LIST_HEAD(&pcontext->list_attached);
+	initlock(&pcontext->lock_attached);
 
 	if (cudaStreamCreate(&pcontext->stream_dma) != cudaSuccess) {
 		GMM_DPRINT("failed to create stream for dma\n");
@@ -946,11 +948,6 @@ int region_evict(struct region *r)
 	return 0;
 }
 
-int victim_evict_remote(int iclient, long size_needed)
-{
-	return 0;
-}
-
 // Evict the victim %victim.
 // %victim may point to a local region or a remote client that
 // may own some evictable region.
@@ -959,7 +956,8 @@ int victim_evict(struct victim *victim, long size_needed)
 	if (victim->r)
 		return region_evict(victim->r);
 	else
-		return victim_evict_remote(victim->client, size_needed);
+		return remote_victim_evict(victim->client,
+				size_needed - get_free_memsize_signed());
 }
 
 // Evict some device memory so that the size of free space can
@@ -986,6 +984,9 @@ static int gmm_evict(long size_needed, struct region **excls, int nexcl)
 				if (v->r->state != STATE_FREEING)
 					v->r->state = STATE_ATTACHED;
 				release(&v->r->lock);
+			}
+			else if (v->client != -1) {
+				// TODO: unpin the remote client
 			}
 			list_del(e);
 			e = e->next;
@@ -1027,7 +1028,7 @@ static int region_attach(
 	}
 
 	// Attach if current free memory space is larger than region size.
-	if (r->size <= get_free_memsize() &&
+	if (r->size <= client_free_memsize() &&
 		nv_cudaMalloc(&r->addr_dev, r->size) == cudaSuccess)
 		goto attach_success;
 
@@ -1081,38 +1082,14 @@ static int region_load(
 	if (r->hint.rw_dynmic & HINT_READ) {
 		for (i = 0; i < NRBLOCKS(r->size); i++) {
 			if (!r->blocks[i].dev_valid)
-				gmm_block_sync(r, i);
+				block_sync(r, i);
 		}
 	}
 
 	return 0;
 }
 
-/*
-static int gmm_load1(struct region **rgns, int n)
-{
-	return 0;
-}
-
-static int gmm_load2(struct region **rgns, int n)
-{
-	return 0;
-}
-
-static int gmm_load3(struct region **rgns, int n)
-{
-	return 0;
-}
-*/
-
 // Load all %n regions specified by %rgns to device.
-//
-// Memory region loadings happen in three stages:
-//   first, load objects that are already in attached states;
-//   then, load objects that are in detached states;
-//   finally, load the rest, blocking for an object if it is
-//   still being evicted.
-//
 // Every successfully loaded region is pinned to device.
 // If all regions cannot be loaded successfully, successfully
 // loaded regions will be unpinned so that they can be
@@ -1145,17 +1122,6 @@ static int gmm_load(struct region **rgns, int n)
 			goto fail;
 		pinned[i] = 1;
 	}
-
-/*	ret = gmm_load1(rgns, n, pinned);
-	if (ret)
-		goto fail;
-	ret = gmm_load2(rgns, n, pinned);
-	if (ret)
-		goto fail;
-	ret = gmm_load3(rgns, n, pinned);
-	if (ret)
-		goto fail;
-*/
 
 	free(pinned);
 	return 0;

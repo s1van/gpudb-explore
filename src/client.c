@@ -111,7 +111,7 @@ static int alloc_client()
 }
 
 // Attach this process to the global GMM arena.
-int gmm_attach()
+int client_attach()
 {
 	int shmfd;
 
@@ -163,7 +163,7 @@ fail_shm:
 
 // TODO: have to make sure operations are executed only when attach was
 // successful
-void gmm_detach() {
+void client_detach() {
 	attached = 0;
 	free_client();
 	cid = -1;
@@ -177,25 +177,25 @@ void gmm_detach() {
 	}
 }
 
-long get_memsize()
+long memsize()
 {
 	return pglobal->mem_total;
 }
 
-long get_free_memsize()
+long free_memsize()
 {
-	long freesize = pglobal->mem_total - pglobal->size_attached;
+	long freesize = pglobal->mem_total - pglobal->mem_used;
 	return freesize < 0 ? 0 : freesize;
 }
 
-long get_free_memsize_signed()
+long free_memsize2()
 {
-	return pglobal->mem_total - pglobal->size_attached;
+	return pglobal->mem_total - pglobal->mem_used;
 }
 
 void update_attached(long delta)
 {
-	atomic_addl(&pglobal->size_attached, delta);
+	atomic_addl(&pglobal->mem_used, delta);
 }
 
 void update_detachable(long delta)
@@ -214,4 +214,41 @@ void begin_load()
 void end_load()
 {
 	sem_post(&sem_attach);
+}
+
+// Get the id of the least recently used client with detachable device memory.
+// The client is pinned if it is a remote client.
+int client_lru_detachable()
+{
+	int iclient;
+
+	acquire(&pglobal->lock);
+	for (iclient = pglobal->ilru; iclient != -1;
+			iclient = pglobal->clients[iclient].iprev) {
+		if (pglobal->clients[iclient].size_detachable > 0)
+			break;
+	}
+	if (iclient != -1 && iclient != cid)
+		pglobal->clients[iclient].pin++;
+	release(&pglobal->lock);
+
+	return iclient;
+}
+
+void client_unpin(int client)
+{
+	acquire(&pglobal->lock);
+	pglobal->clients[client].pin--;
+	release(&pglobal->lock);
+}
+
+// Is the client a local client?
+int is_client_local(int client)
+{
+	return client == cid;
+}
+
+int remote_victim_evict(int client, long size_needed)
+{
+	return 0;
 }
