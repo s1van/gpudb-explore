@@ -87,14 +87,13 @@ int start_gmm()
 	initlock(&pglobal->lock);
 	pglobal->mem_total = total;
 	atomic_setl(&pglobal->mem_used, 0);
-	pglobal->maxclients = NCLIENTS;
 	pglobal->nclients = 0;
 	pglobal->ilru = pglobal->imru = -1;
 	memset(pglobal->clients, 0, sizeof(pglobal->clients[0]) * NCLIENTS);
 	for (i = 0; i < NCLIENTS; i++) {
 		pglobal->clients[i].index = -1;
-		pglobal->clients[i].list_client.next = -1;
-		pglobal->clients[i].list_client.prev = -1;
+		pglobal->clients[i].inext = -1;
+		pglobal->clients[i].iprev = -1;
 	}
 
 	munmap(pglobal, sizeof(*pglobal));

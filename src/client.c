@@ -8,43 +8,14 @@
 #include "protocol.h"
 
 
-sem_t sem_attach = SEM_FAILED;
-struct gmm_global *pglobal = NULL;
-int cid = -1;
+sem_t sem_launch = SEM_FAILED;		// Guarding kernel launches
+struct gmm_global *pglobal = NULL;	// Global shared memory
+int cid = -1;						// Id of this client
 
-mqd_t mqid_request = (mqd_t) -1;
-pthread_t tid_request;
-mqd_t mqid_notify = (mqd_t) -1;
-//pthread_t tid_notify;		// we omit the notification thread for now
-
-int attached = 0;
-
-
-// The thread that listens to the request message queue
-void *thread_request_listener(void *arg)
-{
-	return NULL;
-}
 
 // Free the client slot taken by the calling process
 static void free_client(int id)
 {
-	char qname[16];
-
-	if (mqid_request != (mqd_t) -1) {
-		sprintf(qname, "/gr_%d", pglobal->clients[id].pid);
-		mq_unlink(qname);
-		mq_close(mqid_request);
-		mqid_request = (mqd_t) -1;
-		// TODO: destroy the request listener thread
-	}
-	if (mqid_notify != (mqd_t)-1) {
-		sprintf(qname, "/gn_%d", pglobal->clients[id].pid);
-		mq_unlink(qname);
-		mq_close(mqid_notify);
-		mqid_notify = (mqd_t)-1;
-	}
-
 	// Remove this client from global client list
 	acquire(&pglobal->lock);
 	ILIST_DEL(pglobal, id);
@@ -57,7 +28,6 @@ static void free_client(int id)
 // Allocate a new client slot for the calling process
 static int alloc_client()
 {
-	char qname[16];
 	int id = -1;
 
 	// Get a unique client id
@@ -77,35 +47,6 @@ static int alloc_client()
 		pglobal->nclients++;
 	}
 	release(&pglobal->lock);
-
-	// Allocate request and notification message queues
-	if (id >= 0 && id < pglobal->maxclients) {
-		sprintf(qname, "/gr_%d", getpid());
-		mqid_request = mq_open(qname, O_RDONLY | O_CREAT | O_EXCL, 0622, NULL);
-		if (mqid_request == (mqd_t) -1) {
-			GMM_DPRINT("failed to create the request queue: %s\n", \
-					strerror(errno));
-			free_client(id);
-			return -1;
-		}
-		if (pthread_create(&tid_request, NULL, thread_request_listener,
-				NULL) != 0) {
-			mq_unlink(mqid_request);
-			mq_close(mqid_request);
-			mqid_request = (mqd_t) -1;
-			free_client(id);
-			return -1;
-		}
-
-		sprintf(qname, "/gn_%d", getpid());
-		mqid_notify = mq_open(qname, O_RDONLY | O_CREAT | O_EXCL, 0622, NULL);
-		if (mqid_notify == (mqd_t) -1) {
-			GMM_DPRINT("failed to create the notification queue: %s\n", \
-					strerror(errno));
-			free_client(id);
-			return -1;
-		}
-	}
 
 	return id;
 }
@@ -145,7 +86,6 @@ int client_attach()
 		goto fail_client;
 	}
 
-	attached = 1;
 	close(shmfd);
 	return 0;
 
@@ -164,7 +104,6 @@ fail_shm:
 // TODO: have to make sure operations are executed only when attach was
 // successful
 void client_detach() {
-	attached = 0;
 	free_client();
 	cid = -1;
 	if (pglobal != NULL) {
@@ -216,8 +155,8 @@ void end_load()
 	sem_post(&sem_attach);
 }
 
-// Get the id of the least recently used client with detachable device memory.
-// The client is pinned if it is a remote client.
+// Get the id of the least recently used client with detachable
+// device memory. The client is pinned if it is a remote client.
 int client_lru_detachable()
 {
 	int iclient;
@@ -229,7 +168,7 @@ int client_lru_detachable()
 			break;
 	}
 	if (iclient != -1 && iclient != cid)
-		pglobal->clients[iclient].pin++;
+		pglobal->clients[iclient].pinned++;
 	release(&pglobal->lock);
 
 	return iclient;
@@ -238,7 +177,7 @@ int client_lru_detachable()
 void client_unpin(int client)
 {
 	acquire(&pglobal->lock);
-	pglobal->clients[client].pin--;
+	pglobal->clients[client].pinned--;
 	release(&pglobal->lock);
 }
 
@@ -246,9 +185,4 @@ void client_unpin(int client)
 int is_client_local(int client)
 {
 	return client == cid;
-}
-
-int remote_victim_evict(int client, long size_needed)
-{
-	return 0;
 }

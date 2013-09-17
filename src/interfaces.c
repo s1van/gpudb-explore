@@ -39,8 +39,6 @@ cudaError_t (*nv_cudaMemsetAsync)(void * , int , size_t, cudaStream_t) = NULL;
 cudaError_t (*nv_cudaDeviceSynchronize)(void) = NULL;
 cudaError_t (*nv_cudaLaunch)(void *) = NULL;
 
-extern int attached;	// in gmm_client.c
-
 
 // The library constructor
 GMM_EXPORT __attribute__((constructor))

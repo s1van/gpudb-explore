@@ -22,6 +22,7 @@ int victim_select_lru_local(
 		GMM_DPRINT("malloc failed for a new victim: %s\n", strerr(errno));
 		return -1;
 	}
+	v->client = -1;
 
 	acquire(&pcontext->lock_attached);
 	list_for_each_prev(pos, &pcontext->list_attached) {
@@ -30,7 +31,6 @@ int victim_select_lru_local(
 			if (r->state == STATE_ATTACHED && !region_pinned(r)) {
 				r->state = STATE_EVICTING;
 				release(&r->lock);
-				v->client = -1;
 				v->r = r;
 				list_add(&v->entry, victims);
 				break;
@@ -43,7 +43,7 @@ int victim_select_lru_local(
 
 	if (pos == &pcontext->list_attached) {
 		free(v);
-		if (size_needed > get_free_memsize())
+		if (size_needed > free_memsize())
 			return -1;
 	}
 

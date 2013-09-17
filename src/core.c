@@ -589,7 +589,7 @@ static void gmm_htod_block(
 				// holding the lock of a swp_valid=0,dev_valid=1 block, which
 				// will prevent the evictor, if any, from freeing the device
 				// memory under us.
-				gmm_block_sync(r, block);
+				block_sync(r, block);
 				release(&b->lock);
 				memcpy(r->addr_swp + offset, src, size);
 				b->dev_valid = 0;
@@ -660,7 +660,7 @@ static void gmm_htod_block(
 				// holding the lock of a swp_valid=0,dev_valid=1 block, which
 				// will prevent the evictor, if any, from freeing the device
 				// memory under us.
-				gmm_block_sync(r, block);
+				block_sync(r, block);
 				release(&b->lock);
 			}
 			else {
@@ -852,7 +852,7 @@ static int gmm_dtoh_block(
 		// We don't need to pin the device memory because we are holding the
 		// lock of a swp_valid=0,dev_valid=1 block, which will prevent the
 		// evictor, if any, from freeing the device memory under us.
-		gmm_block_sync(r, iblock);
+		block_sync(r, iblock);
 		release(&b->lock);
 		memcpy(dst, r->addr_swp + off, size);
 	}
@@ -932,9 +932,14 @@ int victim_select(
 	return ret;
 }
 
+// NOTE: When a local region is evicted, no other parties are
+// supposed to be accessing the region at the same time.
 int region_evict(struct region *r)
 {
 	int i;
+
+	if (!r->addr_dev)
+		panic("addr_dev is null");
 
 	for (i = 0; i < NRBLOCKS(r->size); i++) {
 		if (!r->blocks[i].swp_valid)
@@ -948,6 +953,26 @@ int region_evict(struct region *r)
 	return 0;
 }
 
+// NOTE: Client %client should have been pinned when this function
+// is called.
+int remote_victim_evict(int client, long size_needed)
+{
+	int ret;
+
+	// Prepare message
+	struct msg_req *msg = (struct msg_req *)malloc(sizeof(*msg));
+	if (!msg) {
+		GMM_DPRINT("malloc failed for msg_req\n");
+		return -1;
+	}
+
+	// Send message
+	ret = msq_send(client, (struct msg *)msg, 1);
+	client_unpin(client);
+
+	return ret;
+}
+
 // Evict the victim %victim.
 // %victim may point to a local region or a remote client that
 // may own some evictable region.
@@ -955,9 +980,12 @@ int victim_evict(struct victim *victim, long size_needed)
 {
 	if (victim->r)
 		return region_evict(victim->r);
-	else
-		return remote_victim_evict(victim->client,
-				size_needed - get_free_memsize_signed());
+	else if (victim->client != -1)
+		return remote_victim_evict(victim->client, size_needed);
+	else {
+		panic("victim is neither local nor remote");
+		return -1;
+	}
 }
 
 // Evict some device memory so that the size of free space can
@@ -985,9 +1013,8 @@ static int gmm_evict(long size_needed, struct region **excls, int nexcl)
 					v->r->state = STATE_ATTACHED;
 				release(&v->r->lock);
 			}
-			else if (v->client != -1) {
-				// TODO: unpin the remote client
-			}
+			else if (v->client != -1)
+				client_unpin(v->client);
 			list_del(e);
 			e = e->next;
 			free(v);
@@ -1005,6 +1032,8 @@ fail_evict:
 				v->r->state = STATE_ATTACHED;
 			release(&v->r->lock);
 		}
+		else if (v->client != -1)
+			client_unpin(v->client);
 		list_del(e);
 		e = e->next;
 		free(v);
@@ -1047,7 +1076,7 @@ attach_success:
 	atomic_addl(&pcontext->size_attached, r->size);
 	if (pin)
 		region_pin(r);
-	// Reassure that the dev copies of all blocks are set to invalid
+	// Reassure that the dev copies of all blocks are set to invalid.
 	region_inval(r, 0);
 	r->state = STATE_ATTACHED;
 	list_attached_add(pcontext, r);
