@@ -11,28 +11,29 @@
 // The maximum number of concurrent processes managed by GMM
 #define NCLIENTS	32
 
-// A GMM client registered in the global shared memory
+// A GMM client registered in the global shared memory.
+// Each client has two message queues: one that receives
+// requests from other clients, named "/gr_%pid", the other
+// that receives notifications, named "/gn_%pid".
 struct gmm_client {
 	int index;				// index of this client; -1 means unoccupied
-	int prev;				// index of the next client
-	int next;				// index of the prev client
+	int iprev;				// index of the previous client in the LRU list
+	int inext;				// index of the next client in the LRU list
 
-	//long size_attached;		// TODO: maybe hide this?
+	int pin;				// pinned from being deleted
+
+	//long size_attached;	// TODO: maybe hide this?
 	long size_detachable;
 	//long lru_size;		// TODO
 	//long lru_cost;		// TODO
 
-	// Each client has two message queues: one that receives
-	// requests from other clients, named "/gr_%pid", the other
-	// that receives notifications, named "/gn_%pid"
-	pid_t pid;				// pid of the client process
+	pid_t pid;
 };
 
 // The global management info shared by all GMM clients
 struct gmm_global {
 	struct spinlock lock;		// The lock; it works only when the cache
-								// coherence protocol works for virutal caches
-								// as well.
+								// coherence protocol works for virtual caches.
 	long mem_total;				// Total size of device memory.
 	atomic_l_t mem_used;		// Size of used (attached) device memory
 								// NOTE: in numbers, device memory may be
@@ -40,8 +41,8 @@ struct gmm_global {
 
 	int maxclients;				// Max number of clients supported.
 	int nclients;				// Number of attached client processes.
-	struct gmm_client head;		// The head of client list. head.next is the
-								// MRU end of the list.
+	int imru;
+	int ilru;
 	struct gmm_client clients[NCLIENTS];
 };
 
@@ -53,13 +54,13 @@ static inline void ILIST_ADD(struct gmm_global *p, int inew)
 {
 	if (p->imru == -1) {
 		p->ilru = p->imru = inew;
-		p->clients[inew].list_client.prev = -1;
-		p->clients[inew].list_client.next = -1;
+		p->clients[inew].iprev = -1;
+		p->clients[inew].inext = -1;
 	}
 	else {
-		p->clients[inew].list_client.prev = -1;
-		p->clients[inew].list_client.next = p->imru;
-		p->clients[p->imru].list_client.prev = inew;
+		p->clients[inew].iprev = -1;
+		p->clients[inew].inext = p->imru;
+		p->clients[p->imru].iprev = inew;
 		p->imru = inew;
 	}
 }
@@ -67,16 +68,16 @@ static inline void ILIST_ADD(struct gmm_global *p, int inew)
 // Delete a client from p's client list
 static inline void ILIST_DEL(struct gmm_global *p, int idel)
 {
-	int iprev = p->clients[idel].list_client.prev;
-	int inext = p->clients[idel].list_client.next;
+	int iprev = p->clients[idel].iprev;
+	int inext = p->clients[idel].inext;
 
 	if (iprev != -1)
-		p->clients[iprev].list_client.next = inext;
+		p->clients[iprev].inext = inext;
 	else
 		p->imru = inext;
 
 	if (inext != -1)
-		p->clients[inext].list_client.prev = iprev;
+		p->clients[inext].iprev = iprev;
 	else
 		p->ilru = iprev;
 }

@@ -8,6 +8,7 @@
 #include "client.h"
 #include "core.h"
 #include "util.h"
+#include "hint.h"
 #include "replacement.h"
 
 
@@ -502,7 +503,7 @@ static int gmm_memcpy_htod(void *dst, void *src, unsigned long size)
 // Sync the host and device copies of a data block.
 // The direction of sync is determined by current valid flags. Data are synced
 // from the valid copy to the invalid copy.
-static void gmm_block_sync(struct region *r, int block)
+static void block_sync(struct region *r, int block)
 {
 	int dvalid = r->blocks[block].dev_valid;
 	int svalid = r->blocks[block].swp_valid;
@@ -920,14 +921,41 @@ int victim_select(
 	return ret;
 }
 
-// Evict the victim $victim.
-// $victim may point to a local region or a remote client that
-// owns the region.
-int victim_evict(struct victim *victim, long size_needed)
+int region_evict(struct region *r)
+{
+	int i;
+
+	for (i = 0; i < NRBLOCKS(r->size); i++) {
+		if (!r->blocks[i].swp_valid)
+			block_sync(r, i);
+	}
+	nv_cudaMemFree(r->addr_dev);
+	r->addr_dev = NULL;
+
+	list_attached_del(pcontext, r);
+	r->state = STATE_DETACHED;
+	return 0;
+}
+
+int victim_evict_remote(int iclient, long size_needed)
 {
 	return 0;
 }
 
+// Evict the victim %victim.
+// %victim may point to a local region or a remote client that
+// may own some evictable region.
+int victim_evict(struct victim *victim, long size_needed)
+{
+	if (victim->r)
+		return region_evict(victim->r);
+	else
+		return victim_evict_remote(victim->client, size_needed);
+}
+
+// Evict some device memory so that the size of free space can
+// satisfy %size_needed. Regions in %excls[0:%nexcl) should not
+// be selected for eviction.
 static int gmm_evict(long size_needed, struct region **excls, int nexcl)
 {
 	struct list_head victims, *e;
@@ -989,16 +1017,16 @@ static int region_attach(
 		return -1;
 	}
 
-	// Attach if current free memory space is larger than region size
+	// Attach if current free memory space is larger than region size.
 	if (r->size <= get_free_memsize() &&
 		nv_cudaMalloc(&r->addr_dev, r->size) == cudaSuccess)
 		goto attach_success;
 
-	// Evict some device memory
+	// Evict some device memory.
 	if (gmm_evict(r->size, excls, nexcl) < 0 && r->size > get_free_memsize())
 		return -1;
 
-	// Try to attach again
+	// Try to attach again.
 	if (nv_cudaMalloc(&r->addr_dev, r->size) != cudaSuccess) {
 		r->addr_dev = NULL;
 		return -1;
@@ -1012,7 +1040,7 @@ attach_success:
 	// Reassure that the dev copies of all blocks are set to invalid
 	region_inval(r, 0);
 	r->state = STATE_ATTACHED;
-	list_attached_add(r);
+	list_attached_add(pcontext, r);
 
 	return 0;
 }
@@ -1029,7 +1057,7 @@ static int region_load(
 	int i;
 
 	if (r->state == STATE_EVICTING || r->state == STATE_FREEING) {
-		GMM_DPRINT("should not see evicting/freeing region\n");
+		GMM_DPRINT("should not see a evicting/freeing region during loading\n");
 		return -1;
 	}
 
@@ -1068,7 +1096,7 @@ static int gmm_load3(struct region **rgns, int n)
 }
 */
 
-// Load all $n regions specified by $rgns to device.
+// Load all %n regions specified by %rgns to device.
 //
 // Memory region loadings happen in three stages:
 //   first, load objects that are already in attached states;
@@ -1096,8 +1124,10 @@ static int gmm_load(struct region **rgns, int n)
 	memset(pinned, 0, n);
 
 	for (i = 0; i < n; i++) {
-		if (rgns[i]->state == STATE_FREEING)
+		if (rgns[i]->state == STATE_FREEING) {
+			GMM_DPRINT("warning: not loading freed region\n");
 			continue;
+		}
 		// NOTE: In current design, this locking is redundant
 		acquire(&rgns[i]->lock);
 		ret = region_load(rgns[i], 1, rgns, n);
