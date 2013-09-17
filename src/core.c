@@ -223,7 +223,7 @@ cudaError_t gmm_cudaMemcpyDtoH(
 // Which stream is the upcoming kernel to be issued to?
 static cudaStream_t stream_issue = 0;
 
-// TODO: Currently, issue_stream is always set to pcontext->stream_kernel.
+// TODO: Currently, %stream_issue is always set to pcontext->stream_kernel.
 // This is not the best solution because it forbids kernels from being
 // issued to different streams, which is required for, e.g., concurrent
 // kernel executions.
@@ -243,6 +243,7 @@ cudaError_t gmm_cudaConfigureCall(
 
 // Reference hints passed for a kernel launch
 extern int refs[NREFS];
+extern int int rwflags[NREFS];
 extern int nrefs;
 
 // The regions referenced by the following kernel to be launched
@@ -253,9 +254,9 @@ static int iarg = 0;	// which argument current cudaSetupArgument refers to
 
 // CUDA pushes kernel arguments from left to right. For example, for a kernel
 //				k(a, b, c)
-// , a will be pushed with gmm_cudaSetupArgument first, followed by b, and
-// finally c. $offset gives the actual offset of an argument in the call stack,
-// rather than which argument being pushed.
+// , a will be pushed with cudaSetupArgument first, followed by b, and
+// finally c. %offset gives the actual offset of an argument in the call
+// stack, rather than which argument is being pushed.
 //
 // Let's assume cudaSetupArgument is invoked following the sequence of
 // arguments.
@@ -267,6 +268,7 @@ cudaError_t gmm_cudaSetupArgument(
 	struct region *r;
 	cudaError_t ret;
 	int is_dptr = 0;
+	int i;
 
 	// Test whether this argument is a device memory pointer.
 	// If it is, record it and postpone its pushing until cudaLaunch.
@@ -274,17 +276,16 @@ cudaError_t gmm_cudaSetupArgument(
 	// (but parsing errors are possible, e.g., when the user pass the
 	// long argument that happen to lay within some region's host swap
 	// buffer area).
-	// XXX: maybe we should assume all memory objects are to be referenced
+	// XXX: we should assume all memory objects are to be referenced
 	// if not reference hints are given.
 	if (nrefs > 0) {
-		int i;
 		for (i = 0; i < nrefs; i++) {
 			if (refs[i] == iarg)
 				break;
 		}
 		if (i < nrefs) {
 			if (size != sizeof(void *))
-				panic("cudaSetupArgument");
+				panic("cudaSetupArgument does not match cudaReference");
 			r = region_lookup(pcontext, *(void **)arg);
 			if (!r)
 				// TODO: report error more gracefully
@@ -301,8 +302,11 @@ cudaError_t gmm_cudaSetupArgument(
 	if (is_dptr) {
 		dargs[nargs].r = r;
 		dargs[nargs].off = (unsigned long)(*(void **)arg - r->addr_swp);
-		dargs[nargs].argoff = offset;
-		nargs++;
+		if (nrefs > 0)
+			dargs[nargs].flag = rwflags[i];
+		else
+			dargs[nargs].flag = 0;
+		dargs[nargs++].argoff = offset;
 		ret = cudaSuccess;
 	}
 	else
@@ -328,8 +332,9 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 
 	// It is possible that multiple device pointers fall into
 	// the same region. So we need to get the list of unique
-	// regions referenced by the kernel being launched.
-	rgns = (struct region *)malloc(sizeof(struct region *) * NREFS);
+	// regions referenced by the kernel being launched. Set
+	// dynamic rw hints too.
+	rgns = (struct region *)malloc(sizeof(*rgns) * NREFS);
 	if (!rgns) {
 		GMM_DPRINT("malloc failed for region array in gmm_cudaLaunch: %s\n", \
 				strerror(errno));
@@ -339,10 +344,18 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 	for (i = 0; i < nargs; i++) {
 		if (!is_included(rgns, nrgns, dargs[i].r)) {
 			rgns[nrgns++] = dargs[i].r;
+			dargs[i].r->hint.rw_dynmic = dargs[i].flag;
 			totsize += dargs[i].r->size;
 		}
+		else
+			dargs[i].r->hint.rw_dynmic |= dargs[i].flag;
 	}
-	if (totsize > get_free_memsize()) {
+	for (i = 0; i < nrgns; i++) {
+		if (rgns[i]->hint.rw_dynmic == 0)
+			rgns[i]->hint.rw_dynmic = rgns[i]->hint.rw_static;
+	}
+
+	if (totsize > get_memsize()) {
 		GMM_DPRINT("kernel requires too much device memory space (%ld)\n", \
 				totsize);
 		free(rgns);
@@ -368,33 +381,29 @@ reload:
 		goto reload;
 	}
 
-	// Process RW hints
-	// TODO: the handling of RW hints needs to be re-organized
+	// Process RW hints.
+	// TODO: the handling of RW hints needs to be re-organized. E.g.,
+	// what if the launch below failed, how to specify partial
+	// modification.
 	for (i = 0; i < nrgns; i++) {
-		if (rgns[i]->hint.rw_dynmic < 0)
-			rgns[i]->hint.rw_dynmic = rgns[i]->hint.rw_static;
 		if (rgns[i]->hint.rw_dynmic & HINT_WRITE) {
-			blocks_inval(rgns[i], 1);
-			blocks_val(rgns[i], 0);
+			region_inval(rgns[i], 1);
+			region_valid(rgns[i], 0);
 		}
 	}
 
-	// Push all device pointer arguments
+	// Push all device pointer arguments.
 	for (i = 0; i < nargs; i++) {
 		dargs[i].dptr = dargs[i].r->addr_dev + dargs[i].off;
-		nv_cudaSetupArgument(&dargs[i].dptr, 8, dargs[i].argoff);
+		nv_cudaSetupArgument(&dargs[i].dptr, sizeof(void *), dargs[i].argoff);
 	}
 
-	// Now we can launch the kernel
+	// Now we can launch the kernel.
 	if (gmm_launch(entry, rgns, nrgns) < 0) {
 		for (i = 0; i < nrgns; i++)
 			region_unpin(rgns[i]);
 		ret = cudaErrorUnknown;
 	}
-
-	// Reset RW hints
-	for (i = 0; i < nrgns; i++)
-		rgns[i]->hint.rw_dynmic = -1;
 
 finish:
 	if (rgns)

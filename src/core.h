@@ -64,6 +64,7 @@ struct region {
 struct dptr_arg {
 	struct region *r;		// the region this argument points to
 	unsigned long off;		// device pointer offset in the region
+	int flag;
 	void *dptr;				// the actual device memory address
 	unsigned long argoff;	// this argument's offset in the argument stack
 };
@@ -102,7 +103,7 @@ struct victim {
 #define region_unpin(r)		atomic_dec(&(r)->pinned)
 
 
-// Invalidate all blocks in a region
+// Invalidate all blocks in a region.
 static inline void region_inval(struct region *r, int swp)
 {
 	int i;
@@ -117,8 +118,8 @@ static inline void region_inval(struct region *r, int swp)
 	}
 }
 
-// Validate all blocks in a region
-static inline void region_val(struct region *r, int swp)
+// Validate all blocks in a region.
+static inline void region_valid(struct region *r, int swp)
 {
 	int i;
 
