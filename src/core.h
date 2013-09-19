@@ -95,6 +95,7 @@ struct victim {
 	struct list_head entry;
 };
 
+#define MIN(x, y)	((x) < (y) ? (x) : (y))
 
 #define NRBLOCKS(size)		(((size) + BLOCKSIZE - 1) / BLOCKSIZE)
 #define BLOCKIDX(offset)	((unsigned long)(offset) / BLOCKSIZE)
@@ -133,6 +134,46 @@ static inline void region_valid(struct region *r, int swp)
 		for (i = 0; i < NRBLOCKS(r->size); i++)
 			r->blocks[i].dev_valid = 1;
 	}
+}
+
+// Whether pointer p is included in pointer array a[0:n)
+static inline int is_included(void **a, int n, void *p)
+{
+	int i;
+
+	for (i = 0; i < n; i++)
+		if (a[i] == p)
+			return 1;
+
+	return 0;
+}
+
+static void list_alloced_add(struct gmm_context *ctx, struct region *r)
+{
+	acquire(&ctx->lock_alloced);
+	list_add(&r->entry_alloced, &ctx->list_alloced);
+	release(&ctx->lock_alloced);
+}
+
+static void list_alloced_del(struct gmm_context *ctx, struct region *r)
+{
+	acquire(&ctx->lock_alloced);
+	list_del(&r->entry_alloced);
+	release(&ctx->lock_alloced);
+}
+
+static void list_attached_add(struct gmm_context *ctx, struct region *r)
+{
+	acquire(&ctx->lock_attached);
+	list_add(&r->entry_attached, &ctx->list_attached);
+	release(&ctx->lock_attached);
+}
+
+static void list_attached_del(struct gmm_context *ctx, struct region *r)
+{
+	acquire(&ctx->lock_attached);
+	list_del(&r->entry_attached);
+	release(&ctx->lock_attached);
 }
 
 

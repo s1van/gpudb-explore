@@ -82,10 +82,10 @@ static inline int list_empty(const struct list_head *head)
 	return head->next == head;
 }
 
-#define offsetof(TYPE, MEMBER) ((unsigned long) &((TYPE *)0)->MEMBER)
+#define OFFSETOF(TYPE, MEMBER) ((unsigned long) &((TYPE *)0)->MEMBER)
 
 // Get the struct containing a list_head entry.
 #define list_entry(ptr, type, member) \
-	((type *) ((char *)(ptr) - offsetof(type,member)))
+	((type *) ((char *)(ptr) - OFFSETOF(type,member)))
 
 #endif

@@ -7,7 +7,6 @@
 #include "common.h"
 #include "client.h"
 #include "core.h"
-#include "util.h"
 #include "hint.h"
 #include "replacement.h"
 
@@ -41,6 +40,7 @@ static int gmm_dtoh(
 		size_t count);
 static int gmm_load(struct region **rgns, int nrgns);
 static int gmm_launch(const char *entry, struct region **rgns, int nrgns);
+static struct region *region_lookup(struct gmm_context *ctx, const void *ptr);
 
 // The GMM context for this process
 struct gmm_context *pcontext = NULL;
@@ -907,6 +907,32 @@ static int gmm_dtoh(
 
 	free(skipped);
 	return 0;
+}
+
+// Look up a memory object by the ptr passed from user program.
+// ptr should fall within the virtual memory area of the host swap buffer of
+// the memory object, if it can be found.
+static struct region *region_lookup(struct gmm_context *ctx, const void *ptr)
+{
+	struct region *r;
+	struct list_head *pos;
+	int found = 0;
+
+	acquire(&ctx->lock_alloced);
+	list_for_each(pos, &ctx->list_alloced) {
+		r = list_entry(pos, struct region, entry_alloced);
+		if ((unsigned long)ptr >= (unsigned long)r->addr_swp &&
+			(unsigned long)ptr < ((unsigned long)r->addr_swp + r->size)) {
+			found = 1;
+			break;
+		}
+	}
+	release(&ctx->lock_alloced);
+
+	if (!found)
+		r = NULL;
+
+	return r;
 }
 
 // Select victims for %size_needed bytes of free device memory space.

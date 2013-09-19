@@ -1,4 +1,4 @@
-include gmm.cfg
+include gmm.mk
 
 FLAG_DEBUG = -DGMM_DEBUG
 ifeq ($(ENABLE_DEBUG), 0)
@@ -12,32 +12,53 @@ endif
 
 CC = gcc
 NVCC = nvcc
-CFLAGS = -Wall -fvisibility=hidden $(FLAG_DEBUG) $(FLAG_PROFILE) $(GMM_CONFIGS)
+CFLAGS := -Wall -pthread -fPIC -fvisibility=hidden \
+	$(FLAG_DEBUG) $(FLAG_PROFILE) $(GMM_CONFIGS)
+LDFLAGS = -shared -pthread -ldl -fPIC
 
+# Name of the GMM shared library
+LIBGMM = libgmm.so
+
+# Object files needed to create $(LIBGMM)
+OBJS = common.o core.o interfaces.o msq.o replacement.o
+
+.DEFAULT_GOAL := all
 .PHONY : all run purerun clean
 
-all : gmm_server gmm_client ic_gmm.so test
+all : gmmctl $(LIBGMM) test
 
-gmm_server : gmm_server.o gmm_core.o
-	$(CC) -pthread -ldl $(.SOURCES) -o $(.TARGET)
+gmmctl : server.o
+	$(NVCC) -arch=sm_20 $^ -o $@
 
-gmm_server.o : gmm_server.c
-	$(CC) -pthread -ldl -fPIC -c $(.SOURCE) -o $(.TARGET)
+server.o : server.c protocol.h spinlock.h list.h atomic.h
+	$(NVCC) -c -arch=sm_20 $< -o $@
 
-gmm_client: gmm_client.c gmm_core.c
-	$(CC) -pthread -ldl -fPIC gmm_client.c gmm_core.c -o $(.TARGET)
+$(LIBGMM): $(OBJS)
+	$(CC) $(LDFLAGS) $(OBJS) -o $@
 
-ic_gmm.so: intercept_gmm.c gmm_core.c
-	$(CC) -shared -ldl -fPIC intercept_gmm.c gmm_core.c -o $(.TARGET)
+# Dependencies with header files
+common.o : common.h
+core.o: common.h client.h core.h hint.h replacement.h
+interfaces.o : common.h core.h protocol.h interfaces.h
+msq.o : common.h client.h
+replacement.o : replacement.h protocol.h
 
-test: 
-	$(NVCC) test.cu -arch=sm_20 -o $(.TARGET)
+test:
+	$(NVCC) -arch=sm_20 test.cu -o $@
 
 run:
-	LD_PRELOAD=`pwd`/ic_gmm.so ./test
+	./gmmctl --start
+	LD_PRELOAD=`pwd`/$(LIBGMM) ./test
+	./gmmctl --stop
 
-pure_run:
+purerun:
 	./test
 
 clean:
-	rm -f gmm_server gmm_client ic_gmm.so test
+	-rm -f gmmctl $(LIBGMM) test *.o
+
+# TODO
+install: ;
+
+# TODO
+uninstall: ;

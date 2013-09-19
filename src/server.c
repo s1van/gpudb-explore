@@ -8,16 +8,18 @@
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
-#include <cuda.h>
+#include <cuda_runtime.h>
+#include <stdlib.h>
 
 #include "protocol.h"
+#include "spinlock.h"
 
 int start()
 {
 	struct gmm_global *pglobal;
 	cudaError_t ret;
 	size_t free, total;
-	sem_t sem;
+	sem_t *sem;
 	int i, shmfd;
 
 	ret = cudaMemGetInfo(&free, &total);

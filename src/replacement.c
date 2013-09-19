@@ -1,7 +1,6 @@
 #include <errno.h>
 #include "replacement.h"
 #include "protocol.h"
-#include "util.h"
 
 extern struct gmm_context *pcontext;
 
