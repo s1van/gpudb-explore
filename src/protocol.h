@@ -41,6 +41,11 @@ struct gmm_global {
 	int ilru;
 };
 
+enum msgtype {
+	MSG_REQ_EVICT,
+	MSG_REP_ACK,
+};
+
 // Message header
 struct msg {
 	int type;
@@ -52,8 +57,9 @@ struct msg_req {
 	int type;
 	int size;
 
-	pid_t from;
+	int from;
 	long size_needed;
+	int block;
 };
 
 // A message replying an eviction request.
@@ -61,7 +67,7 @@ struct msg_rep {
 	int type;
 	int size;
 
-	pid_t from;
+	int from;
 	int ret;
 };
 

@@ -13,33 +13,20 @@ struct gmm_global *pglobal = NULL;	// Global shared memory
 int cid = -1;						// Id of this client
 
 
-// Free the client slot taken by the calling process
-static void free_client(int id)
-{
-	// Remove this client from global client list
-	acquire(&pglobal->lock);
-	ILIST_DEL(pglobal, id);
-	pglobal->nclients--;
-	//memset(pglobal->clients + id, 0, sizeof(pglobal->clients[0]));
-	pglobal->clients[id].index = -1;
-	release(&pglobal->lock);
-}
-
-// Allocate a new client slot for the calling process
-static int alloc_client()
+static int client_alloc()
 {
 	int id = -1;
 
 	// Get a unique client id
 	acquire(&pglobal->lock);
-	if (pglobal->nclients < pglobal->maxclients) {
-		for (id = 0; id < pglobal->maxclients; id++) {
+	if (pglobal->nclients < NCLIENTS) {
+		for (id = 0; id < NCLIENTS; id++) {
 			if (pglobal->clients[id].index == -1) {
 				break;
 			}
 		}
 	}
-	if (id >= 0 && id < pglobal->maxclients) {
+	if (id >= 0 && id < NCLIENTS) {
 		memset(pglobal->clients + id, 0, sizeof(pglobal->clients[0]));
 		pglobal->clients[id].index = id;
 		pglobal->clients[id].pid = getpid();
@@ -51,20 +38,27 @@ static int alloc_client()
 	return id;
 }
 
+static void client_free(int id)
+{
+	acquire(&pglobal->lock);
+	ILIST_DEL(pglobal, id);
+	pglobal->nclients--;
+	pglobal->clients[id].index = -1;
+	release(&pglobal->lock);
+}
+
 // Attach this process to the global GMM arena.
 int client_attach()
 {
 	int shmfd;
 
-	// Get the semaphore
-	sem_attach = sem_open(GMM_SEM_NAME, 0);
-	if (sem_attach == SEM_FAILED) {
+	sem_launch = sem_open(GMM_SEM_LAUNCH, 0);
+	if (sem_launch == SEM_FAILED) {
 		GMM_DPRINT("unable to open semaphore: %s\n", strerror(errno));
 		return -1;
 	}
 
-	// Get the shared memory
-	shmfd = shm_open(GMM_SHM_NAME, O_RDWR, 0);
+	shmfd = shm_open(GMM_SHM_GLOBAL, O_RDWR, 0);
 	if (shmfd == -1) {
 		GMM_DPRINT("unable to open shared memory: %s\n", strerror(errno));
 		goto fail_shm;
@@ -76,13 +70,15 @@ int client_attach()
 		GMM_DPRINT("failed to mmap the shared memory: %s\n", strerror(errno));
 		goto fail_mmap;
 	}
-	// TODO: resize the mapping according to pglobal->maxclients
 
-	// Allocate a new client slot
-	cid = alloc_client();
+	if (msq_init() < 0) {
+		GMM_DPRINT("message queue init failed\n");
+		goto fail_msq;
+	}
+
+	cid = client_alloc();
 	if (cid == -1) {
 		GMM_DPRINT("failed to allocate client\n");
-		cid = -1;
 		goto fail_client;
 	}
 
@@ -90,13 +86,15 @@ int client_attach()
 	return 0;
 
 fail_client:
+	msq_fini();
+fail_msq:
 	munmap(pglobal, sizeof(*pglobal));
 fail_mmap:
 	pglobal = NULL;
 	close(shmfd);
 fail_shm:
-	sem_close(GMM_SEM_NAME);
-	sem_attach = SEM_FAILED;
+	sem_close(GMM_SEM_LAUNCH);
+	sem_launch = SEM_FAILED;
 
 	return -1;
 }
@@ -104,15 +102,16 @@ fail_shm:
 // TODO: have to make sure operations are executed only when attach was
 // successful
 void client_detach() {
-	free_client();
+	client_free();
+	msq_fini();
 	cid = -1;
 	if (pglobal != NULL) {
 		munmap(pglobal, sizeof(*pglobal));
 		pglobal = NULL;
 	}
-	if (sem_attach != SEM_FAILED) {
-		sem_close(GMM_SEM_NAME);
-		sem_attach = SEM_FAILED;
+	if (sem_launch != SEM_FAILED) {
+		sem_close(GMM_SEM_LAUNCH);
+		sem_launch = SEM_FAILED;
 	}
 }
 
@@ -185,4 +184,14 @@ void client_unpin(int client)
 int is_client_local(int client)
 {
 	return client == cid;
+}
+
+int getcid()
+{
+	return cid;
+}
+
+pid_t cidtopid(int cid)
+{
+	return pglobal->clients[cid].pid;
 }

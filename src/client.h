@@ -1,7 +1,9 @@
 #ifndef _GMM_CLIENT_H_
 #define _GMM_CLIENT_H_
 
-// Functions exposed to client-side code to interact with global shared memory
+#include <unistd.h>
+
+// Functions exposed to client-side code to interact with global shared memory.
 int client_attach();
 void client_detach();
 
@@ -20,6 +22,7 @@ void client_unpin(int client);
 
 int is_client_local(int client);
 
-int remote_victim_evict(int client, long size_needed);
+int getcid();
+pid_t cidtopid(int cid);
 
 #endif

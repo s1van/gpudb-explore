@@ -958,19 +958,36 @@ int region_evict(struct region *r)
 int remote_victim_evict(int client, long size_needed)
 {
 	int ret;
-
-	// Prepare message
-	struct msg_req *msg = (struct msg_req *)malloc(sizeof(*msg));
-	if (!msg) {
-		GMM_DPRINT("malloc failed for msg_req\n");
-		return -1;
-	}
-
-	// Send message
-	ret = msq_send(client, (struct msg *)msg, 1);
+	ret = msq_send_req_evict(client, size_needed, 1);
 	client_unpin(client);
-
 	return ret;
+}
+
+// In replacement.c.
+int victim_select_lru_local(
+		long size_needed,
+		struct region **excls,
+		int nexcl,
+		struct list_head *victims);
+
+// Similar to gmm_evict, but only select at most one victim from local
+// region list, even if it is smaller than required, evict it, and return.
+int local_victim_evict(long size_needed)
+{
+	struct list_head victims;
+	struct victim *v;
+	struct region *r;
+
+	if (victim_select_lru_local(size_needed, NULL, 0, &victims) < 0)
+		return -1;
+
+	if (list_empty(&victims))
+		return 0;
+
+	v = list_entry(victims.next, struct victim, entry);
+	r = v->r;
+	free(v);
+	return region_evict(r);
 }
 
 // Evict the victim %victim.
