@@ -56,18 +56,21 @@ int victim_select_lru(
 		long size_needed,
 		struct region **excls,
 		int nexcl,
+		int local_only,
 		struct list_head *victims)
 {
 	struct victim *v;
 	int iclient;
 
-	iclient = client_lru_detachable();
-	if (iclient == -1)
-		return -1;
+	if (!local_only) {
+		iclient = client_lru_detachable();
+		if (iclient == -1)
+			return -1;
+	}
 
 	// If the LRU client is a remote client, record its client id;
 	// otherwise, select the LRU region in the local context immediately.
-	if (!is_client_local(iclient)) {
+	if (!local_only && !is_client_local(iclient)) {
 		v = (struct victim *)malloc(*v);
 		if (!v) {
 			GMM_DPRINT("malloc failed for a new victim: %s\n", strerr(errno));

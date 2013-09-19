@@ -8,11 +8,13 @@ int victim_select_lru(
 		long size_needed,
 		struct region **excls,
 		int nexcl,
+		int local_only,
 		struct list_head *victims);
 int victim_select_lfu(
 		long size_needed,
 		struct region **excls,
 		int nexcl,
+		int local_only,
 		struct list_head *victims);
 
 #endif

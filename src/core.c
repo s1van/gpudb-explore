@@ -916,14 +916,15 @@ int victim_select(
 		long size_needed,
 		struct region **excls,
 		int nexcl,
+		int local_only,
 		struct list_head *victims)
 {
 	int ret = 0;
 
 #if defined(GMM_REPLACEMENT_LRU)
-	ret = victim_select_lru(size_needed, excls, nexcl, victims);
+	ret = victim_select_lru(size_needed, excls, nexcl, local_only, victims);
 #elif defined(GMM_REPLACEMENT_LFU)
-	ret = victim_select_lfu(size_needed, excls, nexcl, victims);
+	ret = victim_select_lfu(size_needed, excls, nexcl, local_only, victims);
 #else
 	panic("replacement policy not specified");
 	ret = -1;
@@ -963,13 +964,6 @@ int remote_victim_evict(int client, long size_needed)
 	return ret;
 }
 
-// In replacement.c.
-int victim_select_lru_local(
-		long size_needed,
-		struct region **excls,
-		int nexcl,
-		struct list_head *victims);
-
 // Similar to gmm_evict, but only select at most one victim from local
 // region list, even if it is smaller than required, evict it, and return.
 int local_victim_evict(long size_needed)
@@ -978,7 +972,7 @@ int local_victim_evict(long size_needed)
 	struct victim *v;
 	struct region *r;
 
-	if (victim_select_lru_local(size_needed, NULL, 0, &victims) < 0)
+	if (victim_select(size_needed, NULL, 0, 1, &victims) < 0)
 		return -1;
 
 	if (list_empty(&victims))
