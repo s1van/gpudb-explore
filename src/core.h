@@ -64,25 +64,24 @@ struct region {
 struct dptr_arg {
 	struct region *r;		// the region this argument points to
 	unsigned long off;		// device pointer offset in the region
-	int flag;
+	int flags;
 	void *dptr;				// the actual device memory address
 	unsigned long argoff;	// this argument's offset in the argument stack
 };
 
 // Kernel callback structure
 struct kcb {
-	struct region *rgns[NREFS];
-	int nrgns;
+	struct region *rgns[NREFS];	// Regions referenced by the kernel
+	int nrgns;					// Number of regions referenced
 };
 
-// The local management info within each GMM client
+// The local GMM context
 struct gmm_context {
-	struct spinlock lock;				// lock for local synchronizations
-	//atomic_l_t size_alloced;			// total size of allocated mem regions
-	atomic_l_t size_attached;			// total size of attached mem regions
-	struct list_head list_alloced;		// list of all allocated mem regions
-	struct spinlock lock_alloced;
+	struct spinlock lock;				// TODO: what's the use of this lock??
+	latomic_t size_attached;			// Total size of attached mem regions
+	struct list_head list_alloced;		// List of all allocated mem regions
 	struct list_head list_attached;		// LRU list of attached mem regions
+	struct spinlock lock_alloced;
 	struct spinlock lock_attached;
 	cudaStream_t stream_dma;			// The CUDA stream for DMA operations
 	cudaStream_t stream_kernel;			// The CUDA stream for kernel launches

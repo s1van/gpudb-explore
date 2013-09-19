@@ -54,7 +54,7 @@ int client_attach()
 
 	sem_launch = sem_open(GMM_SEM_LAUNCH, 0);
 	if (sem_launch == SEM_FAILED) {
-		GMM_DPRINT("unable to open semaphore: %s\n", strerror(errno));
+		GMM_DPRINT("unable to open launch semaphore: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -67,7 +67,7 @@ int client_attach()
 	pglobal = (struct gmm_global *)mmap(NULL, sizeof(*pglobal),
 			PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
 	if (pglobal == MAP_FAILED) {
-		GMM_DPRINT("failed to mmap the shared memory: %s\n", strerror(errno));
+		GMM_DPRINT("failed to mmap shared memory: %s\n", strerror(errno));
 		goto fail_mmap;
 	}
 
@@ -103,8 +103,8 @@ fail_shm:
 // successful
 void client_detach() {
 	client_free();
-	msq_fini();
 	cid = -1;
+	msq_fini();
 	if (pglobal != NULL) {
 		munmap(pglobal, sizeof(*pglobal));
 		pglobal = NULL;

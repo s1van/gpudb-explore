@@ -36,7 +36,7 @@ static inline int atomic_dec(atomic_t *ptr)
 }
 
 // Long atomics
-static inline void latomic_set(latomic_t *ptr, int val)
+static inline void latomic_set(latomic_t *ptr, long val)
 {
 	*ptr = val;
 }

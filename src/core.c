@@ -18,13 +18,13 @@ extern cudaError_t (*nv_cudaMemcpy)(void *, const void *, size_t,
 		enum cudaMemcpyKind);
 extern cudaError_t (*nv_cudaMemcpyAsync)(void *, const void *,
 		size_t, enum cudaMemcpyKind, cudaStream_t stream);
-extern cudaError_t (*nv_cudaStreamCreate)(cudaStream_t *);
-extern cudaError_t (*nv_cudaStreamSynchronize)(cudaStream_t);
+//extern cudaError_t (*nv_cudaStreamCreate)(cudaStream_t *);
+//extern cudaError_t (*nv_cudaStreamSynchronize)(cudaStream_t);
 extern cudaError_t (*nv_cudaSetupArgument) (const void *, size_t, size_t);
 extern cudaError_t (*nv_cudaConfigureCall)(dim3, dim3, size_t, cudaStream_t);
 extern cudaError_t (*nv_cudaMemset)(void * , int , size_t );
-extern cudaError_t (*nv_cudaMemsetAsync)(void * , int , size_t, cudaStream_t);
-extern cudaError_t (*nv_cudaDeviceSynchronize)(void);
+//extern cudaError_t (*nv_cudaMemsetAsync)(void * , int , size_t, cudaStream_t);
+//extern cudaError_t (*nv_cudaDeviceSynchronize)(void);
 extern cudaError_t (*nv_cudaLaunch)(void *);
 
 static int gmm_free(struct memobj *m);
@@ -46,6 +46,7 @@ static struct region *region_lookup(struct gmm_context *ctx, const void *ptr);
 struct gmm_context *pcontext = NULL;
 
 
+// Initialize local GMM context.
 int gmm_context_init()
 {
 	if (pcontext != NULL) {
@@ -60,22 +61,21 @@ int gmm_context_init()
 	}
 
 	initlock(&pcontext->lock);
-	//pcontext->size_alloced = 0;
-	pcontext->size_attached = 0;
+	latomic_set(&pcontext->size_attached, 0L);
 	INIT_LIST_HEAD(&pcontext->list_alloced);
-	initlock(&pcontext->lock_alloced);
 	INIT_LIST_HEAD(&pcontext->list_attached);
+	initlock(&pcontext->lock_alloced);
 	initlock(&pcontext->lock_attached);
 
 	if (cudaStreamCreate(&pcontext->stream_dma) != cudaSuccess) {
-		GMM_DPRINT("failed to create stream for dma\n");
+		GMM_DPRINT("failed to create DMA stream\n");
 		free(pcontext);
 		pcontext = NULL;
 		return -1;
 	}
 
 	if (cudaStreamCreate(&pcontext->stream_kernel) != cudaSuccess) {
-		GMM_DPRINT("failed to create stream for kernel launch\n");
+		GMM_DPRINT("failed to create kernel stream\n");
 		cudaStreamDestroy(pcontext->stream_dma);
 		free(pcontext);
 		pcontext = NULL;
@@ -87,7 +87,7 @@ int gmm_context_init()
 
 void gmm_context_fini()
 {
-	// TODO: have to free all memory objects still attached to device
+	// TODO: free all dangling memory regions.
 
 	cudaStreamDestroy(pcontext->stream_dma);
 	cudaStreamDestroy(pcontext->stream_kernel);
@@ -320,6 +320,11 @@ cudaError_t gmm_cudaSetupArgument(
 	return ret;
 }
 
+// Priority of the kernel launch (defined in interfaces.c).
+// TODO: have to arrange something in global shared memory
+// to expose kernel launch priority and scheduling info.
+extern int prio_kernel;
+
 cudaError_t gmm_cudaLaunch(const char *entry)
 {
 	cudaError_t ret = cudaSuccess;
@@ -417,12 +422,11 @@ finish:
 	return ret;
 }
 
+// TODO
 cudaError_t gmm_cudaMemset(void * devPtr, int value, size_t count)
 {
-
+	return nv_cudaMemset(devPtr, value, count);
 }
-
-
 
 // The return value of this function tells whether the region has been
 // immediately freed. 0 - not freed yet; 1 - freed.

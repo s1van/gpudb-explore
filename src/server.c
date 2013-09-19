@@ -12,7 +12,6 @@
 #include <stdlib.h>
 
 #include "protocol.h"
-#include "spinlock.h"
 
 int start()
 {
