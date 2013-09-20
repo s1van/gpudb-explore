@@ -85,8 +85,14 @@ void handle_req_evict(struct msg_req *msg)
 {
 	int ret;
 
-	if (msg->from == getcid())
-		panic("handle_req_evict");
+	if (msg->size != sizeof(*msg)) {
+		GMM_DPRINT("message size unmatches size of msg_req\n");
+		return;
+	}
+	if (msg->from == getcid()) {
+		GMM_DPRINT("message from self\n");
+		return;
+	}
 
 	ret = local_victim_evict(msg->size_needed);
 	if (msg->block)
@@ -95,8 +101,14 @@ void handle_req_evict(struct msg_req *msg)
 
 void handle_rep_ack(struct msg_rep *msg)
 {
-	if (msg->from == getcid())
-		panic("handle_rep_ack");
+	if (msg->size != sizeof(*msg)) {
+		GMM_DPRINT("message size unmatches size of msg_rep\n");
+		return;
+	}
+	if (msg->from == getcid()) {
+		GMM_DPRINT("message from self\n");
+		return;
+	}
 
 	pthread_mutex_lock(&mutx_ack);
 	ack = msg->ret;
@@ -104,11 +116,12 @@ void handle_rep_ack(struct msg_rep *msg)
 	pthread_mutex_lock(&mutx_ack);
 }
 
-// The thread that receives and handles messages.
+// The thread that receives and handles messages from peer clients.
 void *thread_msq_listener(void *arg)
 {
-	char *msgbuf = NULL;
 	struct mq_attr qattr;
+	char *msgbuf = NULL;
+	ssize_t msgsz;
 
 	if (mq_getattr(mqid, &qattr) == -1) {
 		GMM_DPRINT("failed to get msq attr: %s\n", strerr(errno));
@@ -122,12 +135,12 @@ void *thread_msq_listener(void *arg)
 	}
 
 	while (1) {
-		if (mq_receive(mqid, msgbuf, qattr.mq_msgsize + 1, NULL)
-				== -1) {
+		msgsz = mq_receive(mqid, msgbuf, qattr.mq_msgsize + 1, NULL);
+		if (msgsz == -1) {
 			if (errno == EINTR)
 				continue;
 			else if (errno == EBADF) {
-				GMM_DPRINT("message queue closed; msq_listern exiting\n");
+				GMM_DPRINT("message queue closed; msq_listener exiting\n");
 				break;
 			}
 			else {
@@ -135,6 +148,11 @@ void *thread_msq_listener(void *arg)
 				GMM_DPRINT("mq_listener exiting\n");
 				break;
 			}
+		}
+		else if (msgsz != ((struct msg *)msgbuf)->size) {
+			GMM_DPRINT("bytes received (%d) unmatch message size (%d)\n", \
+					msgsz, ((struct msg *)msgbuf)->size);
+			continue;
 		}
 
 		switch (((struct msg *)msgbuf)->type) {
@@ -145,7 +163,7 @@ void *thread_msq_listener(void *arg)
 			handle_rep_ack((struct msg_rep *)msgbuf);
 			break;
 		default:
-			GMM_DPRINT("unknown message type (%d), ignoring\n", \
+			GMM_DPRINT("unknown message type (%d)\n", \
 					((struct msg *)msgbuf)->type);
 			break;
 		}
@@ -159,20 +177,27 @@ int msq_init()
 {
 	char qname[32];
 
-	pthread_mutex_init(&mutx_ack);
-	pthread_cond_init(&cond_ack);
-
-	sprintf(qname, "/gmm_cli_%d", getpid());
-	mqid = mq_open(qname, O_RDONLY | O_CREAT | O_EXCL, 0622, NULL);
-	if (mqid == (mqd_t) -1) {
-		GMM_DPRINT("failed to create the request queue: %s\n", \
-				strerror(errno));
+	if (mqid != (mqd_t)-1) {
+		GMM_DPRINT("msq already initialized\n");
 		return -1;
 	}
 
+	sprintf(qname, "/gmm_cli_%d", getpid());
+	mqid = mq_open(qname, O_RDONLY | O_CREAT | O_EXCL, 0422, NULL);
+	if (mqid == (mqd_t) -1) {
+		GMM_DPRINT("failed to create message queue: %s\n", strerror(errno));
+		return -1;
+	}
+
+	pthread_mutex_init(&mutx_ack);
+	pthread_cond_init(&cond_ack);
+
 	if (pthread_create(&tid_msq, NULL, thread_msq_listener, NULL) != 0) {
+		GMM_DPRINT("failed to create msq listener thread\n");
+		pthread_cond_destroy(&cond_ack);
+		pthread_mutext_destroy(&mutx_ack);
 		mq_close(mqid);
-		mq_unlink(mqid);
+		mq_unlink(qname);
 		mqid = (mqd_t) -1;
 		return -1;
 	}
@@ -190,8 +215,7 @@ void msq_fini()
 		mq_unlink(qname);
 		mqid = (mqd_t) -1;
 		pthread_join(tid_msq, NULL);
+		pthread_cond_destroy(&cond_ack);
+		pthread_mutext_destroy(&mutx_ack);
 	}
-
-	pthread_cond_destroy(&cond_ack);
-	pthread_mutext_destroy(&mutx_ack);
 }

@@ -9,6 +9,7 @@
 
 #include "common.h"
 #include "core.h"
+#include "client.h"
 #include "protocol.h"
 #include "interfaces.h"
 #include "hint.h"
@@ -23,8 +24,8 @@ cudaError_t (*nv_cudaMemcpy)(void *, const void *,
 //		size_t, enum cudaMemcpyKind, cudaStream_t stream) = NULL;
 //cudaError_t (*nv_cudaStreamCreate)(cudaStream_t *) = NULL;
 //cudaError_t (*nv_cudaStreamSynchronize)(cudaStream_t) = NULL;
+cudaError_t (*nv_cudaMemGetInfo)(size_t*, size_t*) = NULL;
 cudaError_t (*nv_cudaSetupArgument) (const void *, size_t, size_t) = NULL;
-//cudaError_t (*nv_cudaMemGetInfo)(size_t*, size_t*) = NULL;
 cudaError_t (*nv_cudaConfigureCall)(dim3, dim3, size_t, cudaStream_t) = NULL;
 cudaError_t (*nv_cudaMemset)(void * , int , size_t ) = NULL;
 //cudaError_t (*nv_cudaMemsetAsync)(void * , int , size_t, cudaStream_t) = NULL;
@@ -33,7 +34,7 @@ cudaError_t (*nv_cudaLaunch)(void *) = NULL;
 
 static int initialized = 0;
 
-// The library constructor. Note:
+// The library constructor.
 // The order of initialization matters. First, link to the default
 // CUDA interface implementations, because CUDA interfaces have
 // been intercepted by our library and we should be able to redirect
@@ -45,18 +46,19 @@ static int initialized = 0;
 GMM_EXPORT __attribute__((constructor))
 void gmm_init(void)
 {
-	INTERCEPT_CUDA("cudaMalloc", nv_cudaMalloc);
-	INTERCEPT_CUDA("cudaFree", nv_cudaFree);
-	INTERCEPT_CUDA("cudaMemcpy", nv_cudaMemcpy);
+	INTERCEPT_CUDA2("cudaMalloc", nv_cudaMalloc);
+	INTERCEPT_CUDA2("cudaFree", nv_cudaFree);
+	INTERCEPT_CUDA2("cudaMemcpy", nv_cudaMemcpy);
 	//INTERCEPT_CUDA2("cudaMemcpyAsync", nv_cudaMemcpyAsync);
 	//INTERCEPT_CUDA2("cudaStreamCreate", nv_cudaStreamCreate);
 	//INTERCEPT_CUDA2("cudaStreamSynchronize", nv_cudaStreamSynchronize);
-	INTERCEPT_CUDA("cudaSetupArgument", nv_cudaSetupArgument);
-	INTERCEPT_CUDA("cudaConfigureCall", nv_cudaConfigureCall);
-	INTERCEPT_CUDA("cudaMemset", nv_cudaMemset);
+	INTERCEPT_CUDA2("cudaMemGetInfo", nv_cudaMemGetInfo);
+	INTERCEPT_CUDA2("cudaSetupArgument", nv_cudaSetupArgument);
+	INTERCEPT_CUDA2("cudaConfigureCall", nv_cudaConfigureCall);
+	INTERCEPT_CUDA2("cudaMemset", nv_cudaMemset);
 	//INTERCEPT_CUDA2("cudaMemsetAsync", nv_cudaMemsetAsync);
 	//INTERCEPT_CUDA2("cudaDeviceSynchronize", nv_cudaDeviceSynchronize);
-	INTERCEPT_CUDA("cudaLaunch", nv_cudaLaunch);
+	INTERCEPT_CUDA2("cudaLaunch", nv_cudaLaunch);
 
 	if (gmm_context_init() == -1) {
 		GMM_DPRINT("failed to initialize GMM local context\n");
@@ -69,6 +71,11 @@ void gmm_init(void)
 		return;
 	}
 
+	// TODO: before marking GMM context initialized, invoke an NV function
+	// to initialize CUDA runtime and let whatever memory regions allocated
+	// by CUDA runtime implicitly happen now. Those regions should be always
+	// attached and not be managed by GMM runtime.
+
 	initialized = 1;
 }
 
@@ -78,6 +85,7 @@ void gmm_fini(void)
 {
 	client_detach();
 	gmm_context_fini();
+	initialized = 0;
 }
 
 GMM_EXPORT
@@ -86,7 +94,7 @@ cudaError_t cudaMalloc(void **devPtr, size_t size)
 	cudaError_t ret;
 
 	if (initialized)
-		ret = gmm_cudaMalloc(devPtr, size, 0);
+		ret = gmm_cudaMalloc(devPtr, size);
 	else
 		ret = nv_cudaMalloc(devPtr, size);
 
@@ -94,14 +102,14 @@ cudaError_t cudaMalloc(void **devPtr, size_t size)
 }
 
 // GMM-specific: allowing passing flags such as static read/write hints.
-GMM_EXPORT
-cudaError_t cudaMallocEx(void **devPtr, size_t size, int flags)
-{
-	if (initialized)
-		return gmm_cudaMalloc(devPtr, size, flags);
-	else
-		return cudaErrorInitializationError;
-}
+//GMM_EXPORT
+//cudaError_t cudaMallocEx(void **devPtr, size_t size, int flags)
+//{
+//	if (initialized)
+//		return gmm_cudaMalloc(devPtr, size, flags);
+//	else
+//		return cudaErrorInitializationError;
+//}
 
 GMM_EXPORT
 cudaError_t cudaFree(void *devPtr)
@@ -133,6 +141,19 @@ cudaError_t cudaMemcpy(
 	}
 	else
 		ret = nv_cudaMemcpy(dst, src, count, kind);
+
+	return ret;
+}
+
+GMM_EXPORT
+cudaError_t cudaMemGetInfo(size_t *free, size_t *total)
+{
+	cudaError_t ret;
+
+	if (initialized)
+		ret = gmm_cudaMemGetInfo(free, total);
+	else
+		ret = nv_cudaMemGetInfo(free, total);
 
 	return ret;
 }
@@ -225,8 +246,7 @@ int nrefs = 0;
 // GMM-specific: pass reference hints.
 // %which_arg tells which argument (starting with 0) in the following
 // cudaSetupArgument calls is a device memory pointer. %flags is the
-// read-write flag. The caller may simply specify flags=0 to use the
-// static read-write flag.
+// read-write flag.
 // The GMM runtime should expect to see call sequence similar to below:
 // cudaReference, ..., cudaReference, cudaConfigureCall,
 // cudaSetupArgument, ..., cudaSetupArgument, cudaLaunch
@@ -252,7 +272,7 @@ cudaError_t cudaReference(int which_arg, int flags)
 			rwflags[i] |= flags;
 	}
 	else {
-		GMM_DPRINT("bad reference argument %d (max %d)\n", which_arg, NREFS-1);
+		GMM_DPRINT("bad argument %d (max %d)\n", which_arg, NREFS-1);
 		return cudaErrorInvalidValue;
 	}
 

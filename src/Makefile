@@ -12,7 +12,7 @@ endif
 
 CC = gcc
 NVCC = nvcc
-CFLAGS := -Wall -pthread -fPIC -fvisibility=hidden \
+CFLAGS := -O -Wall -pthread -fPIC -fvisibility=hidden \
 	$(FLAG_DEBUG) $(FLAG_PROFILE) $(GMM_CONFIGS)
 LDFLAGS = -shared -pthread -ldl -fPIC
 

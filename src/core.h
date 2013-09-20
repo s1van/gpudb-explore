@@ -19,13 +19,11 @@ typedef enum region_state {
 	STATE_EVICTED
 } region_state_t;
 
-// Hints passed to a device memory region.
+// RW hint passed to a device memory region.
 // TODO: RW hints can be very delicate. For example, if DB knows a kernel
 // only modifies part of a region, it can pass GMM a RW hint with the range.
-struct rgn_hint {
-	// RW
-	int rw_static;
-	int rw_dynmic;
+struct rwhint {
+	int flags;
 };
 
 // Device memory block.
@@ -51,7 +49,7 @@ struct region {
 	region_state_t state;	// state of the object
 	atomic_t pinned;		// atomic pin counter
 
-	struct rgn_hint hint;	// hint
+	struct rwhint rwhint;	// rw hint
 
 	struct list_head entry_alloced;		// linked to the list of allocated
 	struct list_head entry_attached;	// linked to the list of attached

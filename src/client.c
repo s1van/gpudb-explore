@@ -6,6 +6,7 @@
 #include <pthread.h>
 
 #include "protocol.h"
+#include "msq.h"
 
 
 sem_t sem_launch = SEM_FAILED;		// Guarding kernel launches
@@ -40,11 +41,13 @@ static int client_alloc()
 
 static void client_free(int id)
 {
-	acquire(&pglobal->lock);
-	ILIST_DEL(pglobal, id);
-	pglobal->nclients--;
-	pglobal->clients[id].index = -1;
-	release(&pglobal->lock);
+	if (id >= 0 && id < NCLIENTS) {
+		acquire(&pglobal->lock);
+		ILIST_DEL(pglobal, id);
+		pglobal->nclients--;
+		pglobal->clients[id].index = -1;
+		release(&pglobal->lock);
+	}
 }
 
 // Attach this process to the global GMM arena.

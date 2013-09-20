@@ -20,6 +20,7 @@ extern cudaError_t (*nv_cudaMemcpyAsync)(void *, const void *,
 		size_t, enum cudaMemcpyKind, cudaStream_t stream);
 //extern cudaError_t (*nv_cudaStreamCreate)(cudaStream_t *);
 //extern cudaError_t (*nv_cudaStreamSynchronize)(cudaStream_t);
+extern cudaError_t (*nv_cudaMemGetInfo)(size_t*, size_t*);
 extern cudaError_t (*nv_cudaSetupArgument) (const void *, size_t, size_t);
 extern cudaError_t (*nv_cudaConfigureCall)(dim3, dim3, size_t, cudaStream_t);
 extern cudaError_t (*nv_cudaMemset)(void * , int , size_t );
@@ -96,32 +97,31 @@ void gmm_context_fini()
 }
 
 // Allocate a new device memory object.
-// We only allocate the host swap buffer space for now, and return the address
-// of the host buffer to the user as the identifier of the object.
-// TODO: flags can pass whether object should be always pinned and the static
-// read-write hints.
-cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags)
+// We only allocate the host swap buffer space for now, and return
+// the address of the host buffer to the user as the identifier of
+// the object.
+cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 {
 	struct region *mem;
 	int nblocks;
 
-	if (size > get_memsize()) {
-		GMM_DPRINT("request cudaMalloc size (%u) too large (dev: %ld)", \
-				size, devmem_size());
-		return cudaErrorMemoryAllocation;
+	if (size > memsize()) {
+		GMM_DPRINT("cudaMalloc size (%u) too large (max %ld)", \
+				size, memsize());
+		return cudaErrorInvalidValue;
 	}
 
 	mem = (struct region *)malloc(sizeof(*mem));
 	if (!mem) {
-		GMM_DPRINT("failed to malloc for memobj: %s\n", strerror(errno));
+		GMM_DPRINT("malloc for a new region: %s\n", strerror(errno));
 		return cudaErrorMemoryAllocation;
 	}
+	memset(mem, 0, sizeof(*mem));
 
 	mem->addr_swp = mmap(NULL, size, PROT_READ | PROT_WRITE,
 			MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
 	if (!mem->addr_swp) {
-		GMM_DPRINT("failed to malloc for host swap buffer: %s\n", \
-				stderror(errno));
+		GMM_DPRINT("malloc failed for host swap buffer: %s\n", stderror(errno));
 		free(mem);
 		return cudaErrorMemoryAllocation;
 	}
@@ -129,7 +129,7 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags)
 	nblocks = NRBLOCKS(size);
 	mem->blocks = (struct block *)malloc(sizeof(struct block) * nblocks);
 	if (!mem->blocks) {
-		GMM_DPRINT("failed to malloc for blocks array: %s\n", strerror(errno));
+		GMM_DPRINT("malloc failed for blocks array: %s\n", strerror(errno));
 		munmap(mem->addr_swp, size);
 		free(mem);
 		return cudaErrorMemoryAllocation;
@@ -137,14 +137,13 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags)
 	memset(mem->blocks, 0, sizeof(struct block) * nblocks);
 
 	mem->size = (long)size;
-	mem->addr_dev = NULL;
 	initlock(&mem->lock);
 	mem->state = STATE_DETACHED;
 	atomic_set(&mem->pinned, 0);
+	mem->rwhint.flags = HINT_READ | HINT_WRITE;
 
 	list_alloced_add(pcontext, mem);
 	*devPtr = mem->addr_swp;
-
 	return cudaSuccess;
 }
 
@@ -153,7 +152,7 @@ cudaError_t gmm_cudaFree(void *devPtr)
 	struct region *r;
 
 	if (!(r = region_lookup(pcontext, devPtr))) {
-		GDEV_DPRINT("cannot find memory object with devPtr %p\n", devPtr);
+		GDEV_DPRINT("could not find memory region containing %p\n", devPtr);
 		return cudaErrorInvalidDevicePointer;
 	}
 
@@ -183,7 +182,7 @@ cudaError_t gmm_cudaMemcpyHtoD(
 		return cudaErrorInvalidValue;
 	}
 	if (dst + count > r->addr_swp + r->size) {
-		GMM_DPRINT("copy overflow\n");
+		GMM_DPRINT("htod copy overflow\n");
 		return cudaErrorInvalidValue;
 	}
 
@@ -223,6 +222,13 @@ cudaError_t gmm_cudaMemcpyDtoH(
 	return cudaSuccess;
 }
 
+cudaError_t gmm_cudaMemGetInfo(size_t *free, size_t *total)
+{
+	*free = (size_t)free_memsize();
+	*total = (size_t)memsize();
+	return cudaSuccess;
+}
+
 // Which stream is the upcoming kernel to be issued to?
 static cudaStream_t stream_issue = 0;
 
@@ -230,8 +236,8 @@ static cudaStream_t stream_issue = 0;
 // This is not the best solution because it forbids kernels from being
 // issued to different streams, which is required for, e.g., concurrent
 // kernel executions.
-// A better design is to prepare a kernel callback queue for each possible
-// stream in pcontext->kcb; kernel callbacks are registered in queues where
+// A better design is to prepare a kernel callback queue in pcontext->kcb
+// for each possible stream ; kernel callbacks are registered in queues where
 // they are issued to. This both maintains the correctness of kernel callbacks
 // and retains the capability that kernels being issued to multiple streams.
 cudaError_t gmm_cudaConfigureCall(
@@ -244,7 +250,8 @@ cudaError_t gmm_cudaConfigureCall(
 	return nv_cudaConfigureCall(gridDim, blockDim, sharedMem, stream_issue);
 }
 
-// Reference hints passed for a kernel launch
+// Reference hints passed for a kernel launch. Set by
+// cudaReference in interfaces.c.
 extern int refs[NREFS];
 extern int int rwflags[NREFS];
 extern int nrefs;
@@ -279,7 +286,7 @@ cudaError_t gmm_cudaSetupArgument(
 	// (but parsing errors are possible, e.g., when the user pass the
 	// long argument that happen to lay within some region's host swap
 	// buffer area).
-	// XXX: we should assume all memory objects are to be referenced
+	// XXX: we should assume all memory regions are to be referenced
 	// if not reference hints are given.
 	if (nrefs > 0) {
 		for (i = 0; i < nrefs; i++) {
@@ -306,9 +313,9 @@ cudaError_t gmm_cudaSetupArgument(
 		dargs[nargs].r = r;
 		dargs[nargs].off = (unsigned long)(*(void **)arg - r->addr_swp);
 		if (nrefs > 0)
-			dargs[nargs].flag = rwflags[i];
+			dargs[nargs].flags = rwflags[i];
 		else
-			dargs[nargs].flag = 0;
+			dargs[nargs].flags = HINT_READ | HINT_WRITE;
 		dargs[nargs++].argoff = offset;
 		ret = cudaSuccess;
 	}
@@ -352,15 +359,11 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 	for (i = 0; i < nargs; i++) {
 		if (!is_included(rgns, nrgns, dargs[i].r)) {
 			rgns[nrgns++] = dargs[i].r;
-			dargs[i].r->hint.rw_dynmic = dargs[i].flag;
+			dargs[i].r->rwhint.flags = dargs[i].flags;
 			totsize += dargs[i].r->size;
 		}
 		else
-			dargs[i].r->hint.rw_dynmic |= dargs[i].flag;
-	}
-	for (i = 0; i < nrgns; i++) {
-		if (rgns[i]->hint.rw_dynmic == 0)
-			rgns[i]->hint.rw_dynmic = rgns[i]->hint.rw_static;
+			dargs[i].r->rwhint.flags |= dargs[i].flags;
 	}
 
 	if (totsize > get_memsize()) {
@@ -394,7 +397,7 @@ reload:
 	// what if the launch below failed, how to specify partial
 	// modification.
 	for (i = 0; i < nrgns; i++) {
-		if (rgns[i]->hint.rw_dynmic & HINT_WRITE) {
+		if (rgns[i]->rwhint.flags & HINT_WRITE) {
 			region_inval(rgns[i], 1);
 			region_valid(rgns[i], 0);
 		}
@@ -1149,7 +1152,7 @@ static int region_load(
 		region_pin(r);
 
 	// Fetch data to device memory if necessary
-	if (r->hint.rw_dynmic & HINT_READ) {
+	if (r->rwhint.flags & HINT_READ) {
 		for (i = 0; i < NRBLOCKS(r->size); i++) {
 			if (!r->blocks[i].dev_valid)
 				block_sync(r, i);
