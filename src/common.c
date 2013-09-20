@@ -1,3 +1,5 @@
+#include <stdio.h>
+#include <stdlib.h>
 #include "common.h"
 
 static void show_stackframe() {

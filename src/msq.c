@@ -41,7 +41,7 @@ int msq_send(int client, const struct msg *msg)
 
 // Send a MSQ_REQ_EVICT message to the remote %client. %block specifies
 // whether we should block for the reply (MSG_REP_ACK).
-int msg_send_req_evict(int client, long size_needed, int block)
+int msq_send_req_evict(int client, long size_needed, int block)
 {
 	struct msg_req msg;
 	int ret;
@@ -182,7 +182,7 @@ int msq_init()
 		return -1;
 	}
 
-	sprintf(qname, "/gmm_cli_%d", getpid());
+	sprintf(qname, "/gmm_cli_%d", gettid());
 	mqid = mq_open(qname, O_RDONLY | O_CREAT | O_EXCL, 0422, NULL);
 	if (mqid == (mqd_t) -1) {
 		GMM_DPRINT("failed to create message queue: %s\n", strerror(errno));
@@ -210,7 +210,7 @@ void msq_fini()
 	char qname[32];
 
 	if (mqid != (mqd_t) -1) {
-		sprintf(qname, "/gmm_cli_%d", getpid());
+		sprintf(qname, "/gmm_cli_%d", gettid());
 		mq_close(mqid);
 		mq_unlink(qname);
 		mqid = (mqd_t) -1;

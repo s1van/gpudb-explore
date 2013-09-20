@@ -98,6 +98,8 @@ struct victim {
 #define BLOCKIDX(offset)	((unsigned long)(offset) / BLOCKSIZE)
 #define BLOCKUP(offset)		((offset + BLOCKSIZE) / BLOCKSIZE * BLOCKSIZE)
 
+// TODO: for region_pin, change client's size_detachable if pinned first;
+// for region_unpin, change client's size_detachable if unpiined last.
 #define region_pinned(r)	atomic_read(&(r)->pinned)
 #define region_pin(r)		atomic_inc(&(r)->pinned)
 #define region_unpin(r)		atomic_dec(&(r)->pinned)
@@ -178,7 +180,7 @@ static void list_attached_del(struct gmm_context *ctx, struct region *r)
 int gmm_context_init();
 void gmm_context_fini();
 
-cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags);
+cudaError_t gmm_cudaMalloc(void **devPtr, size_t size);
 cudaError_t gmm_cudaFree(void *devPtr);
 cudaError_t gmm_cudaSetupArgument(
 		const void *arg,
@@ -198,6 +200,6 @@ cudaError_t gmm_cudaConfigureCall(
 		size_t sharedMem,
 		cudaStream_t stream);
 cudaError_t gmm_cudaMemset(void * devPtr, int value, size_t count);
-cudaError_t gmm_cudaLaunch(void* entry);
+cudaError_t gmm_cudaLaunch(const char* entry);
 
 #endif

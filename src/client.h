@@ -7,12 +7,12 @@
 int client_attach();
 void client_detach();
 
-void begin_load();
-void end_load();
+void launch_wait();
+void launch_signal();
 
-long memsize();
-long free_memsize();
-long free_memsize2();
+long memsize_total();
+long memsize_free();
+long memsize_free2();
 
 void update_attached(long delta);
 void update_detachable(long delta);

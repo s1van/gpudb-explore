@@ -42,8 +42,7 @@ int victim_select_lru_local(
 
 	if (pos == &pcontext->list_attached) {
 		free(v);
-		if (size_needed > free_memsize())
-			return -1;
+		return 1;	// XXX: this can be problematic
 	}
 
 	return 0;
@@ -64,7 +63,7 @@ int victim_select_lru(
 	if (!local_only) {
 		iclient = client_lru_detachable();
 		if (iclient == -1)
-			return -1;
+			return 1;
 	}
 
 	// If the LRU client is a remote client, record its client id;
@@ -90,6 +89,7 @@ int victim_select_lfu(
 		long size_needed,
 		struct region **excls,
 		int nexcl,
+		int local_only,
 		struct list_head *victims)
 {
 	return -1;

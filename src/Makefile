@@ -12,6 +12,10 @@ endif
 
 CC = gcc
 NVCC = nvcc
+# CUDA compile flags
+#CUDA_CFLAGS = -I
+# CUDA link flags
+#CUDA_LDFLAGS = -L
 CFLAGS := -O -Wall -pthread -fPIC -fvisibility=hidden \
 	$(FLAG_DEBUG) $(FLAG_PROFILE) $(GMM_CONFIGS)
 LDFLAGS = -shared -pthread -ldl -fPIC

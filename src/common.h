@@ -18,6 +18,16 @@
 #define GMM_PRINT(fmt, arg...)
 #endif
 
+#ifndef gettid
+#define _GNU_SOURCE
+#include <unistd.h>
+#include <sys/syscall.h>
+static inline pid_t gettid()
+{
+	return (pid_t)syscall(186);
+}
+#endif
+
 void panic(char *msg);
 
 #endif

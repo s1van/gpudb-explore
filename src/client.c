@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <pthread.h>
 
+#include "common.h"
 #include "protocol.h"
 #include "msq.h"
 
@@ -30,7 +31,7 @@ static int client_alloc()
 	if (id >= 0 && id < NCLIENTS) {
 		memset(pglobal->clients + id, 0, sizeof(pglobal->clients[0]));
 		pglobal->clients[id].index = id;
-		pglobal->clients[id].pid = getpid();
+		pglobal->clients[id].pid = gettid();
 		ILIST_ADD(pglobal, id);
 		pglobal->nclients++;
 	}
@@ -118,43 +119,43 @@ void client_detach() {
 	}
 }
 
-long memsize()
+long memsize_total()
 {
 	return pglobal->mem_total;
 }
 
-long free_memsize()
+long memsize_free()
 {
 	long freesize = pglobal->mem_total - pglobal->mem_used;
 	return freesize < 0 ? 0 : freesize;
 }
 
-long free_memsize2()
+long memsize_free2()
 {
 	return pglobal->mem_total - pglobal->mem_used;
 }
 
 void update_attached(long delta)
 {
-	atomic_addl(&pglobal->mem_used, delta);
+	latomic_add(&pglobal->mem_used, delta);
 }
 
 void update_detachable(long delta)
 {
-	atomic_addl(&pglobal->clients[cid].size_detachable, delta);
+	latomic_add(&pglobal->clients[cid].size_detachable, delta);
 }
 
-void begin_load()
+void launch_wait()
 {
 	int ret;
 	do {
-		ret = sem_wait(&sem_attach);
+		ret = sem_wait(&sem_launch);
 	} while (ret == -1 && errno == EINTR);
 }
 
-void end_load()
+void launch_signal()
 {
-	sem_post(&sem_attach);
+	sem_post(&sem_launch);
 }
 
 // Get the id of the least recently used client with detachable

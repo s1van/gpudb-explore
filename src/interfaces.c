@@ -30,7 +30,8 @@ cudaError_t (*nv_cudaConfigureCall)(dim3, dim3, size_t, cudaStream_t) = NULL;
 cudaError_t (*nv_cudaMemset)(void * , int , size_t ) = NULL;
 //cudaError_t (*nv_cudaMemsetAsync)(void * , int , size_t, cudaStream_t) = NULL;
 //cudaError_t (*nv_cudaDeviceSynchronize)(void) = NULL;
-cudaError_t (*nv_cudaLaunch)(void *) = NULL;
+cudaError_t (*nv_cudaLaunch)(const char *) = NULL;
+cudaError_t (*nv_cudaStreamAddCallback)() = NULL;
 
 static int initialized = 0;
 

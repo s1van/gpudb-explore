@@ -20,7 +20,7 @@ struct gmm_client {
 	int inext;				// index of the next client in the LRU list
 
 	int pinned;
-	long size_detachable;
+	long size_detachable;	// TODO: update it correctly
 	//long lru_size;		// TODO
 	//long lru_cost;		// TODO
 	pid_t pid;

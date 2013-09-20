@@ -9,6 +9,7 @@
 #include "core.h"
 #include "hint.h"
 #include "replacement.h"
+#include "msq.h"
 
 
 // CUDA function handlers, defined in gmm_interfaces.c
@@ -26,9 +27,9 @@ extern cudaError_t (*nv_cudaConfigureCall)(dim3, dim3, size_t, cudaStream_t);
 extern cudaError_t (*nv_cudaMemset)(void * , int , size_t );
 //extern cudaError_t (*nv_cudaMemsetAsync)(void * , int , size_t, cudaStream_t);
 //extern cudaError_t (*nv_cudaDeviceSynchronize)(void);
-extern cudaError_t (*nv_cudaLaunch)(void *);
+extern cudaError_t (*nv_cudaLaunch)(const char *);
 
-static int gmm_free(struct memobj *m);
+static int gmm_free(struct region *m);
 static int gmm_htod(
 		struct region *r,
 		void *dst,
@@ -105,9 +106,9 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 	struct region *mem;
 	int nblocks;
 
-	if (size > memsize()) {
-		GMM_DPRINT("cudaMalloc size (%u) too large (max %ld)", \
-				size, memsize());
+	if (size > memsize_total()) {
+		GMM_DPRINT("cudaMalloc size (%lu) too large (max %ld)", \
+				size, memsize_total());
 		return cudaErrorInvalidValue;
 	}
 
@@ -121,7 +122,7 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 	mem->addr_swp = mmap(NULL, size, PROT_READ | PROT_WRITE,
 			MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
 	if (!mem->addr_swp) {
-		GMM_DPRINT("malloc failed for host swap buffer: %s\n", stderror(errno));
+		GMM_DPRINT("malloc failed for host swap buffer: %s\n", strerror(errno));
 		free(mem);
 		return cudaErrorMemoryAllocation;
 	}
@@ -152,7 +153,7 @@ cudaError_t gmm_cudaFree(void *devPtr)
 	struct region *r;
 
 	if (!(r = region_lookup(pcontext, devPtr))) {
-		GDEV_DPRINT("could not find memory region containing %p\n", devPtr);
+		GMM_DPRINT("could not find memory region containing %p\n", devPtr);
 		return cudaErrorInvalidDevicePointer;
 	}
 
@@ -224,8 +225,8 @@ cudaError_t gmm_cudaMemcpyDtoH(
 
 cudaError_t gmm_cudaMemGetInfo(size_t *free, size_t *total)
 {
-	*free = (size_t)free_memsize();
-	*total = (size_t)memsize();
+	*free = (size_t)memsize_free();
+	*total = (size_t)memsize_total();
 	return cudaSuccess;
 }
 
@@ -253,23 +254,22 @@ cudaError_t gmm_cudaConfigureCall(
 // Reference hints passed for a kernel launch. Set by
 // cudaReference in interfaces.c.
 extern int refs[NREFS];
-extern int int rwflags[NREFS];
+extern int rwflags[NREFS];
 extern int nrefs;
 
-// The regions referenced by the following kernel to be launched
-// TODO: should prepare the following structures for each stream
+// The device pointer arguments in the following kernel to be launched.
+// TODO: should prepare the following structures for each stream.
 static struct dptr_arg dargs[NREFS];
 static int nargs = 0;
-static int iarg = 0;	// which argument current cudaSetupArgument refers to
+static int iarg = 0;
 
 // CUDA pushes kernel arguments from left to right. For example, for a kernel
 //				k(a, b, c)
-// , a will be pushed with cudaSetupArgument first, followed by b, and
-// finally c. %offset gives the actual offset of an argument in the call
-// stack, rather than which argument is being pushed.
-//
+// , a will be pushed on top of the stack, followed by b, and finally c.
+// %offset gives the actual offset of an argument in the call stack,
+// rather than which argument is being pushed.
 // Let's assume cudaSetupArgument is invoked following the sequence of
-// arguments.
+// arguments from left to right.
 cudaError_t gmm_cudaSetupArgument(
 		const void *arg,
 		size_t size,
@@ -283,7 +283,7 @@ cudaError_t gmm_cudaSetupArgument(
 	// Test whether this argument is a device memory pointer.
 	// If it is, record it and postpone its pushing until cudaLaunch.
 	// Use reference hints if given. Otherwise, parse automatically
-	// (but parsing errors are possible, e.g., when the user pass the
+	// (but parsing errors are possible, e.g., when the user passes a
 	// long argument that happen to lay within some region's host swap
 	// buffer area).
 	// XXX: we should assume all memory regions are to be referenced
@@ -327,75 +327,103 @@ cudaError_t gmm_cudaSetupArgument(
 	return ret;
 }
 
-// Priority of the kernel launch (defined in interfaces.c).
-// TODO: have to arrange something in global shared memory
-// to expose kernel launch priority and scheduling info.
-extern int prio_kernel;
-
-cudaError_t gmm_cudaLaunch(const char *entry)
+// XXX: we should assume all memory regions are to be
+// referenced if no reference hints are given.
+// I.e., if (nargs == 0) do the following; else add all regions;
+static long regions_referenced(struct region ***prgns, int *pnrgns)
 {
-	cudaError_t ret = cudaSuccess;
-	struct region **rgns = NULL;
+	struct region **rgns;
+	long total = 0;
 	int nrgns = 0;
-	long totsize = 0;
-	int i, j, shit;
+	int i;
 
 	if (nrefs > NREFS)
 		panic("nrefs");
-	if (nargs <= 0 || nargs > NREFS)
+	if (nargs < 0 || nargs > NREFS)
 		panic("nargs");
 
-	// It is possible that multiple device pointers fall into
-	// the same region. So we need to get the list of unique
-	// regions referenced by the kernel being launched. Set
-	// dynamic rw hints too.
-	rgns = (struct region *)malloc(sizeof(*rgns) * NREFS);
+	rgns = (struct region **)malloc(sizeof(*rgns) * NREFS);
 	if (!rgns) {
 		GMM_DPRINT("malloc failed for region array in gmm_cudaLaunch: %s\n", \
 				strerror(errno));
-		ret = cudaErrorLaunchOutOfResources;
-		goto finish;
+		return -1;
 	}
+
 	for (i = 0; i < nargs; i++) {
-		if (!is_included(rgns, nrgns, dargs[i].r)) {
+		if (!is_included((void **)rgns, nrgns, (void*)(dargs[i].r))) {
 			rgns[nrgns++] = dargs[i].r;
 			dargs[i].r->rwhint.flags = dargs[i].flags;
-			totsize += dargs[i].r->size;
+			total += dargs[i].r->size;
 		}
 		else
 			dargs[i].r->rwhint.flags |= dargs[i].flags;
 	}
 
-	if (totsize > get_memsize()) {
-		GMM_DPRINT("kernel requires too much device memory space (%ld)\n", \
-				totsize);
+	*pnrgns = nrgns;
+	if (nrgns > 0)
+		*prgns = rgns;
+	else {
 		free(rgns);
+		*prgns = NULL;
+	}
+
+	return total;
+}
+
+// Priority of the kernel launch (defined in interfaces.c).
+// TODO: have to arrange something in global shared memory
+// to expose kernel launch priority and scheduling info.
+extern int prio_kernel;
+
+// It is possible that multiple device pointers fall into
+// the same region. So we first need to get the list of
+// unique regions referenced by the kernel being launched.
+// Then, load all referenced regions. At any time, only one
+// context is allowed to load regions for kernel launch.
+// This is to avoid deadlocks/livelocks caused by memory
+// contentions from simultaneous kernel launches.
+//
+// TODO: Add kernel scheduling logic. The order of loadings
+// plays an important role for fully overlapping kernel executions
+// and DMAs. Ideally, kernels with nothing to load should be issued
+// first. Then the loadings of other kernels can be overlapped with
+// kernel executions.
+// TODO: We should definitly allow multiple loadings to happen
+// simultaneously if we know the amount of free memory is enough.
+cudaError_t gmm_cudaLaunch(const char *entry)
+{
+	cudaError_t ret = cudaSuccess;
+	struct region **rgns = NULL;
+	int nrgns = 0;
+	long total = 0;
+	int i, ldret;
+
+	// NOTE: it is possible nrgns == 0 on return. Consider a
+	// kernel that only uses registers for example.
+	total = regions_referenced(&rgns, &nrgns);
+	if (total < 0 || total > memsize_total()) {
+		GMM_DPRINT("kernel requires too much device memory space (%ld)\n", \
+				total);
 		ret = cudaErrorInvalidConfiguration;
 		goto finish;
 	}
 
-	// Load all referenced regions. At any time, only one context
-	// is allowed to load regions for kernel launch. This is to
-	// avoid deadlocks/livelocks caused by memory contentions from
-	// concurrent kernel launches.
-	// TODO: Add kernel scheduling logic here. The order of loadings
-	// plays an important role for fully overlapping kernel executions
-	// and DMAs. Ideally, kernels with nothing to load should be issued
-	// first. Then the loadings of other kernels can be overlapped with
-	// kernel executions.
 reload:
-	begin_load();
-	shit = gmm_load(rgns, nrgns);
-	end_load();
-	if (shit) {
+	launch_wait();
+	ldret = gmm_load(rgns, nrgns);
+	launch_signal();
+	if (ldret > 0) {	// load unsuccessful, retry later
 		sched_yield();
 		goto reload;
 	}
+	else if (ldret < 0) {	// fatal load error, quit launching
+		GMM_DPRINT("load failed; quitting kernel launch\n");
+		ret = cudaErrorUnknown;
+		goto finish;
+	}
 
 	// Process RW hints.
-	// TODO: the handling of RW hints needs to be re-organized. E.g.,
-	// what if the launch below failed, how to specify partial
-	// modification.
+	/// XXX: What if the launch below failed? Partial modification?
 	for (i = 0; i < nrgns; i++) {
 		if (rgns[i]->rwhint.flags & HINT_WRITE) {
 			region_inval(rgns[i], 1);
@@ -435,8 +463,6 @@ cudaError_t gmm_cudaMemset(void * devPtr, int value, size_t count)
 // immediately freed. 0 - not freed yet; 1 - freed.
 static int gmm_free(struct region *r)
 {
-	int being_evicted = 0;
-
 	// First, properly inspect/set region state
 re_acquire:
 	acquire(&r->lock);
@@ -475,7 +501,7 @@ re_acquire:
 		munmap(r->addr_swp, r->size);
 	if (r->state == STATE_ATTACHED && r->addr_dev) {
 		nv_cudaFree(r->addr_dev);
-		atomic_subl(&pcontext->size_attached, r->size);
+		latomic_sub(&pcontext->size_attached, r->size);
 		update_attached(-r->size);
 		update_detachable(-r->size);
 	}
@@ -528,7 +554,7 @@ static void block_sync(struct region *r, int block)
 	unsigned long off1, off2;
 
 	// Nothing to sync if both are valid or both are invalid
-	if (dvalid ^ svalid == 0)
+	if ((dvalid ^ svalid) == 0)
 		return;
 
 	off1 = block * BLOCKSIZE;
@@ -707,7 +733,7 @@ static int gmm_htod(
 {
 	int iblock, ifirst, ilast;
 	unsigned long off, end;
-	void *s = src;
+	void *s = (void *)src;
 	char *skipped;
 
 	off = (unsigned long)(dst - r->addr_swp);
@@ -716,7 +742,7 @@ static int gmm_htod(
 	ilast = BLOCKIDX(off + (count - 1));
 	skipped = (char *)malloc(ilast - ifirst + 1);
 	if (!skipped) {
-		GMM_DPRINT("failed to malloc for skipped[]: %s\n", strerrno(errno));
+		GMM_DPRINT("failed to malloc for skipped[]: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -757,7 +783,7 @@ static int gmm_htod(
 
 	// Finally, copy the rest blocks, no skipping.
 	off = (unsigned long)(dst - r->addr_swp);
-	s = src;
+	s = (void *)src;
 	for (iblock = ifirst; iblock <= ilast; iblock++) {
 		unsigned long size = MIN(BLOCKUP(off), end) - off;
 		if (skipped[iblock - ifirst])
@@ -886,7 +912,7 @@ static int gmm_dtoh(
 
 	skipped = (char *)malloc(BLOCKIDX(end - 1) - ifirst + 1);
 	if (!skipped) {
-		GMM_DPRINT("failed to malloc for skipped[]: %s\n", strerrno(errno));
+		GMM_DPRINT("failed to malloc for skipped[]: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -968,6 +994,8 @@ int victim_select(
 
 // NOTE: When a local region is evicted, no other parties are
 // supposed to be accessing the region at the same time.
+// This is not true if multiple loadings happen simultaneously,
+// but this region has been locked in region_load() anyway.
 int region_evict(struct region *r)
 {
 	int i;
@@ -979,7 +1007,7 @@ int region_evict(struct region *r)
 		if (!r->blocks[i].swp_valid)
 			block_sync(r, i);
 	}
-	nv_cudaMemFree(r->addr_dev);
+	nv_cudaFree(r->addr_dev);
 	r->addr_dev = NULL;
 
 	list_attached_del(pcontext, r);
@@ -1004,9 +1032,11 @@ int local_victim_evict(long size_needed)
 	struct list_head victims;
 	struct victim *v;
 	struct region *r;
+	int ret;
 
-	if (victim_select(size_needed, NULL, 0, 1, &victims) < 0)
-		return -1;
+	ret = victim_select(size_needed, NULL, 0, 1, &victims);
+	if (ret != 0)
+		return ret;
 
 	if (list_empty(&victims))
 		return 0;
@@ -1039,16 +1069,19 @@ static int gmm_evict(long size_needed, struct region **excls, int nexcl)
 {
 	struct list_head victims, *e;
 	struct victim *v;
+	int ret = 0;
 
 	INIT_LIST_HEAD(&victims);
 
 	do {
-		if (victim_select(size_needed, excls, nexcl, &victims) < 0)
-			return -1;
+		ret = victim_select(size_needed, excls, nexcl, 0, &victims);
+		if (ret != 0)
+			return ret;
+
 		for (e = victims.next; e != (&victims); ) {
 			v = list_entry(e, struct victim, entry);
-			if (get_free_memsize() < size_needed) {
-				if (victim_evict(v, size_needed) < 0)
+			if (memsize_free() < size_needed) {
+				if ((ret = victim_evict(v, size_needed)) != 0)
 					goto fail_evict;
 			}
 			else if (v->r) {
@@ -1063,7 +1096,7 @@ static int gmm_evict(long size_needed, struct region **excls, int nexcl)
 			e = e->next;
 			free(v);
 		}
-	} while (get_free_memsize() < size_needed);
+	} while (memsize_free() < size_needed);
 
 	return 0;
 
@@ -1083,7 +1116,7 @@ fail_evict:
 		free(v);
 	}
 
-	return -1;
+	return ret;
 }
 
 // Allocate device memory to a region (i.e., attach).
@@ -1093,7 +1126,7 @@ static int region_attach(
 		struct region **excls,
 		int nexcl)
 {
-	int i;
+	int ret;
 
 	if (r->state != STATE_DETACHED) {
 		GMM_DPRINT("nothing to attach\n");
@@ -1101,23 +1134,26 @@ static int region_attach(
 	}
 
 	// Attach if current free memory space is larger than region size.
-	if (r->size <= client_free_memsize() &&
+	if (r->size <= memsize_free() &&
 		nv_cudaMalloc(&r->addr_dev, r->size) == cudaSuccess)
 		goto attach_success;
 
 	// Evict some device memory.
-	if (gmm_evict(r->size, excls, nexcl) < 0 && r->size > get_free_memsize())
-		return -1;
+	ret = gmm_evict(r->size, excls, nexcl);
+	if (ret < 0)
+		return ret;
+	if (ret > 0 && memsize_free() < r->size)
+		return ret;
 
 	// Try to attach again.
 	if (nv_cudaMalloc(&r->addr_dev, r->size) != cudaSuccess) {
 		r->addr_dev = NULL;
-		return -1;
+		return 1;
 	}
 
 attach_success:
 	update_attached(r->size);
-	atomic_addl(&pcontext->size_attached, r->size);
+	latomic_add(&pcontext->size_attached, r->size);
 	if (pin)
 		region_pin(r);
 	// Reassure that the dev copies of all blocks are set to invalid.
@@ -1137,21 +1173,22 @@ static int region_load(
 		struct region **excls,
 		int nexcl)
 {
-	int i;
+	int i, ret;
 
 	if (r->state == STATE_EVICTING || r->state == STATE_FREEING) {
 		GMM_DPRINT("should not see a evicting/freeing region during loading\n");
 		return -1;
 	}
 
-	// Attach if the region is still detached
-	if (r->state == STATE_DETACHED)
-		if (region_attach(r, 1, excls, nexcl) == -1)
-			return -1;
-	else
+	// Attach if the region is still detached.
+	if (r->state == STATE_DETACHED) {
+		if ((ret = region_attach(r, 1, excls, nexcl)) != 0)
+			return ret;
+	}
+	else if (pin)
 		region_pin(r);
 
-	// Fetch data to device memory if necessary
+	// Fetch data to device memory if necessary.
 	if (r->rwhint.flags & HINT_READ) {
 		for (i = 0; i < NRBLOCKS(r->size); i++) {
 			if (!r->blocks[i].dev_valid)
@@ -1167,17 +1204,20 @@ static int region_load(
 // If all regions cannot be loaded successfully, successfully
 // loaded regions will be unpinned so that they can be
 // replaced by other kernel launches.
+// Return value: 0 - success; < 0 - fatal failure; > 0 - retry later.
 static int gmm_load(struct region **rgns, int n)
 {
 	char *pinned;
 	int i, ret;
 
-	if (!rgns || n <= 0)
+	if (n == 0)
+		return 0;
+	if (n < 0 || (n > 0 && !rgns))
 		return -1;
 
 	pinned = (char *)malloc(n);
 	if (!pinned) {
-		GMM_DPRINT("malloc failed for pinned array: %s\n", strerr(errno));
+		GMM_DPRINT("malloc failed for pinned array: %s\n", strerror(errno));
 		return -1;
 	}
 	memset(pinned, 0, n);
@@ -1191,7 +1231,7 @@ static int gmm_load(struct region **rgns, int n)
 		acquire(&rgns[i]->lock);
 		ret = region_load(rgns[i], 1, rgns, n);
 		release(&rgns[i]->lock);
-		if (ret < 0)
+		if (ret != 0)
 			goto fail;
 		pinned[i] = 1;
 	}
@@ -1235,17 +1275,18 @@ static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 
 	pcb = (struct kcb *)malloc(sizeof(*pcb));
 	if (!pcb) {
-		GMM_DPRINT("malloc failed for kcb: %s\n", strerr(errno));
+		GMM_DPRINT("malloc failed for kcb: %s\n", strerror(errno));
 		return -1;
 	}
-	memcpy(&pcb->rgns, rgns, sizeof(void *) * nrgns);
+	if (nrgns > 0)
+		memcpy(&pcb->rgns, rgns, sizeof(void *) * nrgns);
 	pcb->nrgns = nrgns;
 
 	if (nv_cudaLaunch(entry) != cudaSuccess) {
 		free(pcb);
 		return -1;
 	}
-	cudaStreamAddCallback(stream_issue, gmm_kernel_callback, (void *)pcb, 0);
+	nv_cudaStreamAddCallback(stream_issue, gmm_kernel_callback, (void *)pcb, 0);
 
 	return 0;
 }
