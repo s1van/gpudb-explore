@@ -20,8 +20,8 @@ cudaError_t (*nv_cudaMalloc)(void **, size_t) = NULL;
 cudaError_t (*nv_cudaFree)(void *) = NULL;
 cudaError_t (*nv_cudaMemcpy)(void *, const void *,
 		size_t, enum cudaMemcpyKind) = NULL;
-//cudaError_t (*nv_cudaMemcpyAsync)(void *, const void *,
-//		size_t, enum cudaMemcpyKind, cudaStream_t stream) = NULL;
+cudaError_t (*nv_cudaMemcpyAsync)(void *, const void *,
+		size_t, enum cudaMemcpyKind, cudaStream_t stream) = NULL;
 //cudaError_t (*nv_cudaStreamCreate)(cudaStream_t *) = NULL;
 //cudaError_t (*nv_cudaStreamSynchronize)(cudaStream_t) = NULL;
 cudaError_t (*nv_cudaMemGetInfo)(size_t*, size_t*) = NULL;
@@ -51,7 +51,7 @@ void gmm_init(void)
 	INTERCEPT_CUDA2("cudaMalloc", nv_cudaMalloc);
 	INTERCEPT_CUDA2("cudaFree", nv_cudaFree);
 	INTERCEPT_CUDA2("cudaMemcpy", nv_cudaMemcpy);
-	//INTERCEPT_CUDA2("cudaMemcpyAsync", nv_cudaMemcpyAsync);
+	INTERCEPT_CUDA2("cudaMemcpyAsync", nv_cudaMemcpyAsync);
 	//INTERCEPT_CUDA2("cudaStreamCreate", nv_cudaStreamCreate);
 	//INTERCEPT_CUDA2("cudaStreamSynchronize", nv_cudaStreamSynchronize);
 	INTERCEPT_CUDA2("cudaMemGetInfo", nv_cudaMemGetInfo);
