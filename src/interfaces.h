@@ -9,8 +9,8 @@
 //#define GET_TIMEVAL(_t) (_t.tv_sec + _t.tv_usec / 1000000.0)
 //#define GMM_IGNORE_SIZE 5038400
 
-#define CUDA_CU_PATH    "/usr/local/cuda-5.0/lib64/libcuinj64.so"
-#define CUDA_CURT_PATH  "/usr/local/cuda-5.0/lib64/libcudart.so"
+#define CUDA_CU_PATH    "/usr/local/cuda/lib64/libcuinj64.so"
+#define CUDA_CURT_PATH  "/usr/local/cuda/lib64/libcudart.so"
 
 /* check whether dlsym returned successfully */
 #define  TREAT_ERROR()                          \

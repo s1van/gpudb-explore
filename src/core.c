@@ -27,7 +27,7 @@ extern cudaError_t (*nv_cudaConfigureCall)(dim3, dim3, size_t, cudaStream_t);
 extern cudaError_t (*nv_cudaMemset)(void * , int , size_t );
 //extern cudaError_t (*nv_cudaMemsetAsync)(void * , int , size_t, cudaStream_t);
 //extern cudaError_t (*nv_cudaDeviceSynchronize)(void);
-extern cudaError_t (*nv_cudaLaunch)(const char *);
+extern cudaError_t (*nv_cudaLaunch)(const void *);
 extern cudaError_t (*nv_cudaStreamAddCallback)(cudaStream_t,
 		cudaStreamCallback_t, void*, unsigned int);
 
@@ -49,6 +49,35 @@ static struct region *region_lookup(struct gmm_context *ctx, const void *ptr);
 // The GMM context for this process
 struct gmm_context *pcontext = NULL;
 
+
+
+void list_alloced_add(struct gmm_context *ctx, struct region *r)
+{
+	acquire(&ctx->lock_alloced);
+	list_add(&r->entry_alloced, &ctx->list_alloced);
+	release(&ctx->lock_alloced);
+}
+
+void list_alloced_del(struct gmm_context *ctx, struct region *r)
+{
+	acquire(&ctx->lock_alloced);
+	list_del(&r->entry_alloced);
+	release(&ctx->lock_alloced);
+}
+
+void list_attached_add(struct gmm_context *ctx, struct region *r)
+{
+	acquire(&ctx->lock_attached);
+	list_add(&r->entry_attached, &ctx->list_attached);
+	release(&ctx->lock_attached);
+}
+
+void list_attached_del(struct gmm_context *ctx, struct region *r)
+{
+	acquire(&ctx->lock_attached);
+	list_del(&r->entry_attached);
+	release(&ctx->lock_attached);
+}
 
 // Initialize local GMM context.
 int gmm_context_init()
@@ -280,7 +309,7 @@ cudaError_t gmm_cudaSetupArgument(
 	struct region *r;
 	cudaError_t ret;
 	int is_dptr = 0;
-	int i;
+	int i = 0;
 
 	// Test whether this argument is a device memory pointer.
 	// If it is, record it and postpone its pushing until cudaLaunch.
@@ -949,7 +978,7 @@ static int gmm_dtoh(
 // the memory object, if it can be found.
 static struct region *region_lookup(struct gmm_context *ctx, const void *ptr)
 {
-	struct region *r;
+	struct region *r = NULL;
 	struct list_head *pos;
 	int found = 0;
 

@@ -1,6 +1,11 @@
 #include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "replacement.h"
 #include "protocol.h"
+#include "common.h"
+#include "client.h"
 
 extern struct gmm_context *pcontext;
 
@@ -18,7 +23,7 @@ int victim_select_lru_local(
 
 	v = (struct victim *)malloc(sizeof(*v));
 	if (!v) {
-		GMM_DPRINT("malloc failed for a new victim: %s\n", strerr(errno));
+		GMM_DPRINT("malloc failed for a new victim: %s\n", strerror(errno));
 		return -1;
 	}
 	v->client = -1;
@@ -26,7 +31,8 @@ int victim_select_lru_local(
 	acquire(&pcontext->lock_attached);
 	list_for_each_prev(pos, &pcontext->list_attached) {
 		r = list_entry(pos, struct region, entry_attached);
-		if (!is_included(excls, nexcl, r) && try_acquire(&r->lock)) {
+		if (!is_included((void **)excls, nexcl, (void *)r) &&
+				try_acquire(&r->lock)) {
 			if (r->state == STATE_ATTACHED && !region_pinned(r)) {
 				r->state = STATE_EVICTING;
 				release(&r->lock);
@@ -69,9 +75,9 @@ int victim_select_lru(
 	// If the LRU client is a remote client, record its client id;
 	// otherwise, select the LRU region in the local context immediately.
 	if (!local_only && !is_client_local(iclient)) {
-		v = (struct victim *)malloc(*v);
+		v = (struct victim *)malloc(sizeof(*v));
 		if (!v) {
-			GMM_DPRINT("malloc failed for a new victim: %s\n", strerr(errno));
+			GMM_DPRINT("malloc failed for a new victim: %s\n", strerror(errno));
 			client_unpin(iclient);
 			return -1;
 		}

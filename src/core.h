@@ -147,34 +147,6 @@ static inline int is_included(void **a, int n, void *p)
 	return 0;
 }
 
-static void list_alloced_add(struct gmm_context *ctx, struct region *r)
-{
-	acquire(&ctx->lock_alloced);
-	list_add(&r->entry_alloced, &ctx->list_alloced);
-	release(&ctx->lock_alloced);
-}
-
-static void list_alloced_del(struct gmm_context *ctx, struct region *r)
-{
-	acquire(&ctx->lock_alloced);
-	list_del(&r->entry_alloced);
-	release(&ctx->lock_alloced);
-}
-
-static void list_attached_add(struct gmm_context *ctx, struct region *r)
-{
-	acquire(&ctx->lock_attached);
-	list_add(&r->entry_attached, &ctx->list_attached);
-	release(&ctx->lock_attached);
-}
-
-static void list_attached_del(struct gmm_context *ctx, struct region *r)
-{
-	acquire(&ctx->lock_attached);
-	list_del(&r->entry_attached);
-	release(&ctx->lock_attached);
-}
-
 
 // Functions exposed by GMM core
 int gmm_context_init();
@@ -194,6 +166,7 @@ cudaError_t gmm_cudaMemcpyDtoH(
 		void *dst,
 		const void *src,
 		size_t count);
+cudaError_t gmm_cudaMemGetInfo(size_t *free, size_t *total);
 cudaError_t gmm_cudaConfigureCall(
 		dim3 gridDim,
 		dim3 blockDim,

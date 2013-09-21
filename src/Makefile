@@ -7,7 +7,7 @@ CUDAPATH = /usr/local/cuda
 LIBGMM = libgmm.so
 
 # Source and object files needed to create $(LIBGMM)
-SRCS = commom.c core.c interfaces.c msq.c replacement.c
+SRCS = common.c core.c interfaces.c msq.c replacement.c
 OBJS = common.o core.o interfaces.o msq.o replacement.o
 
 FLAG_DEBUG = -DGMM_DEBUG
@@ -22,7 +22,7 @@ endif
 
 # The compiler/linker settings
 CC := gcc
-NVCC := $(CUDAOATH)/bin/nvcc
+NVCC := $(CUDAPATH)/bin/nvcc
 CFLAGS := -O -Wall -pthread -fPIC -fvisibility=hidden \
 	-I$(CUDAPATH)/include \
 	$(FLAG_DEBUG) $(FLAG_PROFILE) $(GMM_CONFIGS)
@@ -31,28 +31,26 @@ LDFLAGS := -shared -pthread -ldl -fPIC
 .DEFAULT_GOAL := all
 .PHONY : depend all run purerun clean
 
-all : gmmctl $(LIBGMM) test
-
-depend : .depend
+all : depend gmmctl $(LIBGMM)
 
 # Generate dependencies for each of $(OBJS)
-.depend : $(SRCS)
+depend:
 	-rm -f ./.depend
-	$(CC) $(CFLAGS) -MM $^ > $@
+	$(CC) $(CFLAGS) -MM $(SRCS) > .depend
 
 -include .depend
 
 gmmctl : server.o
-	$(NVCC) -arch=sm_20 $^ -o $@
+	$(NVCC) -L$(CUDAPATH)/lib64 -arch=sm_20 $^ -o $@
 
 server.o : server.c protocol.h spinlock.h list.h atomic.h
-	$(NVCC) -c -arch=sm_20 $< -o $@
+	$(NVCC) -c -I$(CUDAPATH)/include -arch=sm_20 $< -o $@
 
 $(LIBGMM): $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) -o $@
 
-test:
-	$(NVCC) -arch=sm_20 test.cu -o $@
+#test:
+#	$(NVCC) -arch=sm_20 test.cu -o $@
 
 run:
 	./gmmctl --start
@@ -63,7 +61,7 @@ purerun:
 	./test
 
 clean:
-	-rm -f gmmctl $(LIBGMM) test *.o ./.depend
+	-rm -f gmmctl $(LIBGMM) test *.o .depend
 
 # TODO
 install: ;

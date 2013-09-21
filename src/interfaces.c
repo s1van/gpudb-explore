@@ -30,7 +30,7 @@ cudaError_t (*nv_cudaConfigureCall)(dim3, dim3, size_t, cudaStream_t) = NULL;
 cudaError_t (*nv_cudaMemset)(void * , int , size_t ) = NULL;
 //cudaError_t (*nv_cudaMemsetAsync)(void * , int , size_t, cudaStream_t) = NULL;
 //cudaError_t (*nv_cudaDeviceSynchronize)(void) = NULL;
-cudaError_t (*nv_cudaLaunch)(const char *) = NULL;
+cudaError_t (*nv_cudaLaunch)(const void *) = NULL;
 cudaError_t (*nv_cudaStreamAddCallback)(cudaStream_t,
 		cudaStreamCallback_t, void*, unsigned int) = NULL;
 
@@ -214,7 +214,7 @@ cudaError_t cudaMemset(void * devPtr, int value, size_t count)
 //}
 
 GMM_EXPORT
-cudaError_t cudaLaunch(const char *entry)
+cudaError_t cudaLaunch(const void *entry)
 {
 	cudaError_t ret;
 
