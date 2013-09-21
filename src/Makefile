@@ -1,5 +1,15 @@
 include gmm.mk
 
+# Specify CUDA install path here
+CUDAPATH = /usr/local/cuda
+
+# Name of the GMM shared library
+LIBGMM = libgmm.so
+
+# Source and object files needed to create $(LIBGMM)
+SRCS = commom.c core.c interfaces.c msq.c replacement.c
+OBJS = common.o core.o interfaces.o msq.o replacement.o
+
 FLAG_DEBUG = -DGMM_DEBUG
 ifeq ($(ENABLE_DEBUG), 0)
 FLAG_DEBUG =
@@ -10,26 +20,27 @@ ifeq ($(ENABLE_PROFILE), 0)
 FLAG_PROFILE =
 endif
 
-CC = gcc
-NVCC = nvcc
-# CUDA compile flags
-#CUDA_CFLAGS = -I
-# CUDA link flags
-#CUDA_LDFLAGS = -L
+# The compiler/linker settings
+CC := gcc
+NVCC := $(CUDAOATH)/bin/nvcc
 CFLAGS := -O -Wall -pthread -fPIC -fvisibility=hidden \
+	-I$(CUDAPATH)/include \
 	$(FLAG_DEBUG) $(FLAG_PROFILE) $(GMM_CONFIGS)
-LDFLAGS = -shared -pthread -ldl -fPIC
-
-# Name of the GMM shared library
-LIBGMM = libgmm.so
-
-# Object files needed to create $(LIBGMM)
-OBJS = common.o core.o interfaces.o msq.o replacement.o
+LDFLAGS := -shared -pthread -ldl -fPIC
 
 .DEFAULT_GOAL := all
-.PHONY : all run purerun clean
+.PHONY : depend all run purerun clean
 
 all : gmmctl $(LIBGMM) test
+
+depend : .depend
+
+# Generate dependencies for each of $(OBJS)
+.depend : $(SRCS)
+	-rm -f ./.depend
+	$(CC) $(CFLAGS) -MM $^ > $@
+
+-include .depend
 
 gmmctl : server.o
 	$(NVCC) -arch=sm_20 $^ -o $@
@@ -39,13 +50,6 @@ server.o : server.c protocol.h spinlock.h list.h atomic.h
 
 $(LIBGMM): $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) -o $@
-
-# Dependencies with header files
-common.o : common.h
-core.o: common.h client.h core.h hint.h replacement.h
-interfaces.o : common.h core.h protocol.h interfaces.h
-msq.o : common.h client.h
-replacement.o : replacement.h protocol.h
 
 test:
 	$(NVCC) -arch=sm_20 test.cu -o $@
@@ -59,7 +63,7 @@ purerun:
 	./test
 
 clean:
-	-rm -f gmmctl $(LIBGMM) test *.o
+	-rm -f gmmctl $(LIBGMM) test *.o ./.depend
 
 # TODO
 install: ;

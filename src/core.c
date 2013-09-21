@@ -28,6 +28,8 @@ extern cudaError_t (*nv_cudaMemset)(void * , int , size_t );
 //extern cudaError_t (*nv_cudaMemsetAsync)(void * , int , size_t, cudaStream_t);
 //extern cudaError_t (*nv_cudaDeviceSynchronize)(void);
 extern cudaError_t (*nv_cudaLaunch)(const char *);
+extern cudaError_t (*nv_cudaStreamAddCallback)(cudaStream_t,
+		cudaStreamCallback_t, void*, unsigned int);
 
 static int gmm_free(struct region *m);
 static int gmm_htod(

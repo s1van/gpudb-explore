@@ -31,7 +31,8 @@ cudaError_t (*nv_cudaMemset)(void * , int , size_t ) = NULL;
 //cudaError_t (*nv_cudaMemsetAsync)(void * , int , size_t, cudaStream_t) = NULL;
 //cudaError_t (*nv_cudaDeviceSynchronize)(void) = NULL;
 cudaError_t (*nv_cudaLaunch)(const char *) = NULL;
-cudaError_t (*nv_cudaStreamAddCallback)() = NULL;
+cudaError_t (*nv_cudaStreamAddCallback)(cudaStream_t,
+		cudaStreamCallback_t, void*, unsigned int) = NULL;
 
 static int initialized = 0;
 
@@ -60,6 +61,7 @@ void gmm_init(void)
 	//INTERCEPT_CUDA2("cudaMemsetAsync", nv_cudaMemsetAsync);
 	//INTERCEPT_CUDA2("cudaDeviceSynchronize", nv_cudaDeviceSynchronize);
 	INTERCEPT_CUDA2("cudaLaunch", nv_cudaLaunch);
+	INTERCEPT_CUDA2("cudaStreamAddCallback", nv_cudaStreamAddCallback);
 
 	if (gmm_context_init() == -1) {
 		GMM_DPRINT("failed to initialize GMM local context\n");
