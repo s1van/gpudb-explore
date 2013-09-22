@@ -33,12 +33,16 @@ LDFLAGS := -shared -pthread -ldl -fPIC
 
 all : depend gmmctl $(LIBGMM)
 
-# Generate dependencies for each of $(OBJS)
-depend:
-	-rm -f ./.depend
+# Generate dependencies for $(OBJS)
+depend : .depend
+
+.depend : $(SRCS)
 	$(CC) $(CFLAGS) -MM $(SRCS) > .depend
 
 -include .depend
+
+# No rules for source files
+%.c : ;
 
 gmmctl : server.o
 	$(NVCC) -L$(CUDAPATH)/lib64 -arch=sm_20 $^ -o $@

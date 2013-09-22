@@ -4,9 +4,10 @@
 // Read/write hints
 #define HINT_READ		1
 #define HINT_WRITE		2
+#define HINT_DEFAULT	(HINT_READ | HINT_WRITE)
 
 // Kernel priority hints
-#define PRIO_MAX		15
+#define PRIO_LOWEST		15
 #define PRIO_DEFAULT	PRIO_MAX
 
 #endif

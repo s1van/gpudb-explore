@@ -15,12 +15,13 @@
 // CUDA function handlers, defined in gmm_interfaces.c
 extern cudaError_t (*nv_cudaMalloc)(void **, size_t);
 extern cudaError_t (*nv_cudaFree)(void *);
-extern cudaError_t (*nv_cudaMemcpy)(void *, const void *, size_t,
-		enum cudaMemcpyKind);
+//extern cudaError_t (*nv_cudaMemcpy)(void *, const void *, size_t,
+//		enum cudaMemcpyKind);
 extern cudaError_t (*nv_cudaMemcpyAsync)(void *, const void *,
 		size_t, enum cudaMemcpyKind, cudaStream_t stream);
-//extern cudaError_t (*nv_cudaStreamCreate)(cudaStream_t *);
-//extern cudaError_t (*nv_cudaStreamSynchronize)(cudaStream_t);
+extern cudaError_t (*nv_cudaStreamCreate)(cudaStream_t *);
+extern cudaError_t (*nv_cudaStreamDestroy)(cudaStream_t);
+extern cudaError_t (*nv_cudaStreamSynchronize)(cudaStream_t);
 extern cudaError_t (*nv_cudaMemGetInfo)(size_t*, size_t*);
 extern cudaError_t (*nv_cudaSetupArgument) (const void *, size_t, size_t);
 extern cudaError_t (*nv_cudaConfigureCall)(dim3, dim3, size_t, cudaStream_t);
@@ -31,6 +32,8 @@ extern cudaError_t (*nv_cudaLaunch)(const void *);
 extern cudaError_t (*nv_cudaStreamAddCallback)(cudaStream_t,
 		cudaStreamCallback_t, void*, unsigned int);
 
+// TODO: declare all internal functions here, otherwise gcc
+// might export those symbols.
 static int gmm_free(struct region *m);
 static int gmm_htod(
 		struct region *r,
@@ -50,29 +53,28 @@ static struct region *region_lookup(struct gmm_context *ctx, const void *ptr);
 struct gmm_context *pcontext = NULL;
 
 
-
-void list_alloced_add(struct gmm_context *ctx, struct region *r)
+static void list_alloced_add(struct gmm_context *ctx, struct region *r)
 {
 	acquire(&ctx->lock_alloced);
 	list_add(&r->entry_alloced, &ctx->list_alloced);
 	release(&ctx->lock_alloced);
 }
 
-void list_alloced_del(struct gmm_context *ctx, struct region *r)
+static void list_alloced_del(struct gmm_context *ctx, struct region *r)
 {
 	acquire(&ctx->lock_alloced);
 	list_del(&r->entry_alloced);
 	release(&ctx->lock_alloced);
 }
 
-void list_attached_add(struct gmm_context *ctx, struct region *r)
+static void list_attached_add(struct gmm_context *ctx, struct region *r)
 {
 	acquire(&ctx->lock_attached);
 	list_add(&r->entry_attached, &ctx->list_attached);
 	release(&ctx->lock_attached);
 }
 
-void list_attached_del(struct gmm_context *ctx, struct region *r)
+static void list_attached_del(struct gmm_context *ctx, struct region *r)
 {
 	acquire(&ctx->lock_attached);
 	list_del(&r->entry_attached);
@@ -93,23 +95,23 @@ int gmm_context_init()
 		return -1;
 	}
 
-	initlock(&pcontext->lock);
+	initlock(&pcontext->lock);		// ???
 	latomic_set(&pcontext->size_attached, 0L);
 	INIT_LIST_HEAD(&pcontext->list_alloced);
 	INIT_LIST_HEAD(&pcontext->list_attached);
 	initlock(&pcontext->lock_alloced);
 	initlock(&pcontext->lock_attached);
 
-	if (cudaStreamCreate(&pcontext->stream_dma) != cudaSuccess) {
+	if (nv_cudaStreamCreate(&pcontext->stream_dma) != cudaSuccess) {
 		GMM_DPRINT("failed to create DMA stream\n");
 		free(pcontext);
 		pcontext = NULL;
 		return -1;
 	}
 
-	if (cudaStreamCreate(&pcontext->stream_kernel) != cudaSuccess) {
+	if (nv_cudaStreamCreate(&pcontext->stream_kernel) != cudaSuccess) {
 		GMM_DPRINT("failed to create kernel stream\n");
-		cudaStreamDestroy(pcontext->stream_dma);
+		nv_cudaStreamDestroy(pcontext->stream_dma);
 		free(pcontext);
 		pcontext = NULL;
 		return -1;
@@ -122,8 +124,8 @@ void gmm_context_fini()
 {
 	// TODO: free all dangling memory regions.
 
-	cudaStreamDestroy(pcontext->stream_dma);
-	cudaStreamDestroy(pcontext->stream_kernel);
+	nv_cudaStreamDestroy(pcontext->stream_dma);
+	nv_cudaStreamDestroy(pcontext->stream_kernel);
 	free(pcontext);
 	pcontext = NULL;
 }
@@ -134,7 +136,7 @@ void gmm_context_fini()
 // the object.
 cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 {
-	struct region *mem;
+	struct region *r;
 	int nblocks;
 
 	if (size > memsize_total()) {
@@ -143,39 +145,38 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 		return cudaErrorInvalidValue;
 	}
 
-	mem = (struct region *)malloc(sizeof(*mem));
-	if (!mem) {
+	r = (struct region *)malloc(sizeof(*r));
+	if (!r) {
 		GMM_DPRINT("malloc for a new region: %s\n", strerror(errno));
 		return cudaErrorMemoryAllocation;
 	}
-	memset(mem, 0, sizeof(*mem));
+	memset(r, 0, sizeof(*r));
 
-	mem->addr_swp = mmap(NULL, size, PROT_READ | PROT_WRITE,
-			MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
-	if (!mem->addr_swp) {
+	r->addr_swp = malloc(size);
+	if (!r->addr_swp) {
 		GMM_DPRINT("malloc failed for host swap buffer: %s\n", strerror(errno));
-		free(mem);
+		free(r);
 		return cudaErrorMemoryAllocation;
 	}
 
 	nblocks = NRBLOCKS(size);
-	mem->blocks = (struct block *)malloc(sizeof(struct block) * nblocks);
-	if (!mem->blocks) {
+	r->blocks = (struct block *)malloc(sizeof(struct block) * nblocks);
+	if (!r->blocks) {
 		GMM_DPRINT("malloc failed for blocks array: %s\n", strerror(errno));
-		munmap(mem->addr_swp, size);
-		free(mem);
+		free(r->addr_swp);
+		free(r);
 		return cudaErrorMemoryAllocation;
 	}
-	memset(mem->blocks, 0, sizeof(struct block) * nblocks);
+	memset(r->blocks, 0, sizeof(struct block) * nblocks);
 
-	mem->size = (long)size;
-	initlock(&mem->lock);
-	mem->state = STATE_DETACHED;
-	atomic_set(&mem->pinned, 0);
-	mem->rwhint.flags = HINT_READ | HINT_WRITE;
+	r->size = (long)size;
+	initlock(&r->lock);
+	r->state = STATE_DETACHED;
+	atomic_set(&r->pinned, 0);
+	r->rwhint.flags = HINT_DEFAULT;
 
-	list_alloced_add(pcontext, mem);
-	*devPtr = mem->addr_swp;
+	list_alloced_add(pcontext, r);
+	*devPtr = r->addr_swp;
 	return cudaSuccess;
 }
 
@@ -529,7 +530,7 @@ re_acquire:
 	if (r->blocks)
 		free(r->blocks);
 	if (r->addr_swp)
-		munmap(r->addr_swp, r->size);
+		free(r->addr_swp);
 	if (r->state == STATE_ATTACHED && r->addr_dev) {
 		nv_cudaFree(r->addr_dev);
 		latomic_sub(&pcontext->size_attached, r->size);

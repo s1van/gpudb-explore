@@ -22,8 +22,9 @@ cudaError_t (*nv_cudaMemcpy)(void *, const void *,
 		size_t, enum cudaMemcpyKind) = NULL;
 cudaError_t (*nv_cudaMemcpyAsync)(void *, const void *,
 		size_t, enum cudaMemcpyKind, cudaStream_t stream) = NULL;
-//cudaError_t (*nv_cudaStreamCreate)(cudaStream_t *) = NULL;
-//cudaError_t (*nv_cudaStreamSynchronize)(cudaStream_t) = NULL;
+cudaError_t (*nv_cudaStreamCreate)(cudaStream_t *) = NULL;
+cudaError_t (*nv_cudaStreamDestroy)(cudaStream_t) = NULL;
+cudaError_t (*nv_cudaStreamSynchronize)(cudaStream_t) = NULL;
 cudaError_t (*nv_cudaMemGetInfo)(size_t*, size_t*) = NULL;
 cudaError_t (*nv_cudaSetupArgument) (const void *, size_t, size_t) = NULL;
 cudaError_t (*nv_cudaConfigureCall)(dim3, dim3, size_t, cudaStream_t) = NULL;
@@ -36,6 +37,7 @@ cudaError_t (*nv_cudaStreamAddCallback)(cudaStream_t,
 
 static int initialized = 0;
 
+
 // The library constructor.
 // The order of initialization matters. First, link to the default
 // CUDA interface implementations, because CUDA interfaces have
@@ -45,15 +47,16 @@ static int initialized = 0;
 // context. Finally, after the local environment has been initialized
 // successfully, we connect our local context to the global GMM arena
 // and let the party begin.
-GMM_EXPORT __attribute__((constructor))
+__attribute__((constructor))
 void gmm_init(void)
 {
 	INTERCEPT_CUDA2("cudaMalloc", nv_cudaMalloc);
 	INTERCEPT_CUDA2("cudaFree", nv_cudaFree);
 	INTERCEPT_CUDA2("cudaMemcpy", nv_cudaMemcpy);
 	INTERCEPT_CUDA2("cudaMemcpyAsync", nv_cudaMemcpyAsync);
-	//INTERCEPT_CUDA2("cudaStreamCreate", nv_cudaStreamCreate);
-	//INTERCEPT_CUDA2("cudaStreamSynchronize", nv_cudaStreamSynchronize);
+	INTERCEPT_CUDA2("cudaStreamCreate", nv_cudaStreamCreate);
+	INTERCEPT_CUDA2("cudaStreamDestroy", nv_cudaStreamDestroy);
+	INTERCEPT_CUDA2("cudaStreamSynchronize", nv_cudaStreamSynchronize);
 	INTERCEPT_CUDA2("cudaMemGetInfo", nv_cudaMemGetInfo);
 	INTERCEPT_CUDA2("cudaSetupArgument", nv_cudaSetupArgument);
 	INTERCEPT_CUDA2("cudaConfigureCall", nv_cudaConfigureCall);
@@ -74,16 +77,20 @@ void gmm_init(void)
 		return;
 	}
 
-	// TODO: before marking GMM context initialized, invoke an NV function
-	// to initialize CUDA runtime and let whatever memory regions allocated
-	// by CUDA runtime implicitly happen now. Those regions should be always
-	// attached and not be managed by GMM runtime.
+	// Before marking GMM context initialized, invoke an NV function
+	// to initialize CUDA runtime and let whatever memory regions
+	// allocated by CUDA runtime implicitly happen now. Those regions
+	// should be always attached and not managed by GMM runtime.
+	do {
+		size_t dummy;
+		nv_cudaMemGetInfo(&dummy, &dummy);
+	} while (0);
 
 	initialized = 1;
 }
 
-// The library destructor.s
-GMM_EXPORT __attribute__((destructor))
+// The library destructor.
+__attribute__((destructor))
 void gmm_fini(void)
 {
 	client_detach();
@@ -98,8 +105,14 @@ cudaError_t cudaMalloc(void **devPtr, size_t size)
 
 	if (initialized)
 		ret = gmm_cudaMalloc(devPtr, size);
-	else
+	else {
+		// TODO: we need to remember those device memory allocated
+		// before GMM was initialized, so that later when they are
+		// used in cudaMemcpy or other functions we can treat them
+		// specially.
+		GMM_DPRINT("warning: cudaMalloc called outside of GMM\n");
 		ret = nv_cudaMalloc(devPtr, size);
+	}
 
 	return ret;
 }
@@ -121,8 +134,10 @@ cudaError_t cudaFree(void *devPtr)
 
 	if (initialized)
 		ret = gmm_cudaFree(devPtr);
-	else
+	else {
+		GMM_DPRINT("warning: cudaFree called outside of GMM\n");
 		ret = nv_cudaFree(devPtr);
+	}
 
 	return ret;
 }
@@ -142,8 +157,10 @@ cudaError_t cudaMemcpy(
 		else
 			ret = gmm_cudaMemcpyDtoH(dst, src, count);
 	}
-	else
+	else {
+		GMM_DPRINT("warning: cudaMemcpy called outside of GMM\n");
 		ret = nv_cudaMemcpy(dst, src, count, kind);
+	}
 
 	return ret;
 }
@@ -172,8 +189,10 @@ cudaError_t cudaConfigureCall(
 
 	if (initialized)
 		ret = gmm_cudaConfigureCall(gridDim, blockDim, sharedMem, stream);
-	else
+	else {
+		GMM_DPRINT("warning: cudaConfigureCall called outside of GMM\n");
 		ret = nv_cudaConfigureCall(gridDim, blockDim, sharedMem, stream);
+	}
 
 	return ret;
 }
@@ -188,8 +207,10 @@ cudaError_t cudaSetupArgument(
 
 	if (initialized)
 		ret = gmm_cudaSetupArgument(arg, size, offset);
-	else
+	else {
+		GMM_DPRINT("warning: cudaSetupArgument called outside of GMM\n");
 		ret = nv_cudaSetupArgument(arg, size, offset);
+	}
 
 	return ret;
 }
@@ -201,8 +222,10 @@ cudaError_t cudaMemset(void * devPtr, int value, size_t count)
 
 	if (initialized)
 		ret = gmm_cudaMemset(devPtr, value, count);
-	else
+	else {
+		GMM_DPRINT("warning: cudaMemset called outside of GMM\n");
 		ret = nv_cudaMemset(devPtr, value, count);
+	}
 
 	return ret;
 }
@@ -220,8 +243,10 @@ cudaError_t cudaLaunch(const void *entry)
 
 	if (initialized)
 		ret = gmm_cudaLaunch(entry);
-	else
+	else {
+		GMM_DPRINT("warning: cudaLaunch called outside of GMM\n");
 		ret = nv_cudaLaunch(entry);
+	}
 
 	return ret;
 }
@@ -234,8 +259,11 @@ int prio_kernel = PRIO_DEFAULT;
 GMM_EXPORT
 cudaError_t cudaSetKernelPrio(int prio)
 {
-	if (prio < 0 || prio > PRIO_MAX)
+	if (!initialized)
+		return cudaErrorInitializationError;
+	if (prio < 0 || prio > PRIO_LOWEST)
 		return cudaErrorInvalidValue;
+
 	prio_kernel = prio;
 	return cudaSuccess;
 }
@@ -275,7 +303,8 @@ cudaError_t cudaReference(int which_arg, int flags)
 			rwflags[i] |= flags;
 	}
 	else {
-		GMM_DPRINT("bad argument %d (max %d)\n", which_arg, NREFS-1);
+		GMM_DPRINT("bad cudaReference argument %d (max %d)\n", \
+				which_arg, NREFS-1);
 		return cudaErrorInvalidValue;
 	}
 
