@@ -8,6 +8,6 @@
 
 // Kernel priority hints
 #define PRIO_LOWEST		15
-#define PRIO_DEFAULT	PRIO_MAX
+#define PRIO_DEFAULT	PRIO_LOWEST
 
 #endif
