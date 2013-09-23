@@ -329,7 +329,7 @@ cudaError_t gmm_cudaSetupArgument(
 	// long argument that happen to lay within some region's host swap
 	// buffer area).
 	// XXX: we should assume all memory regions are to be referenced
-	// if not reference hints are given.
+	// if no reference hints are given.
 	if (nrefs > 0) {
 		for (i = 0; i < nrefs; i++) {
 			if (refs[i] == iarg)
@@ -357,12 +357,14 @@ cudaError_t gmm_cudaSetupArgument(
 		if (nrefs > 0)
 			dargs[nargs].flags = rwflags[i];
 		else
-			dargs[nargs].flags = HINT_READ | HINT_WRITE;
+			dargs[nargs].flags = HINT_DEFAULT;
 		dargs[nargs++].argoff = offset;
 		ret = cudaSuccess;
 	}
 	else
-		// This argument is not a device memory pointer
+		// This argument is not a device memory pointer.
+		// XXX: Currently we ignore the case that nv_cudaSetupArgument
+		// returns error and CUDA runtime might stop pushing arguments.
 		ret = nv_cudaSetupArgument(arg, size, offset);
 
 	iarg++;
@@ -384,10 +386,9 @@ static long regions_referenced(struct region ***prgns, int *pnrgns)
 	if (nargs < 0 || nargs > NREFS)
 		panic("nargs");
 
-	rgns = (struct region **)malloc(sizeof(*rgns) * NREFS);
+	rgns = (struct region **)malloc(sizeof(*rgns) * nargs);
 	if (!rgns) {
-		GMM_DPRINT("malloc failed for region array in gmm_cudaLaunch: %s\n", \
-				strerror(errno));
+		GMM_DPRINT("malloc failed for region array: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -430,7 +431,7 @@ extern int prio_kernel;
 // and DMAs. Ideally, kernels with nothing to load should be issued
 // first. Then the loadings of other kernels can be overlapped with
 // kernel executions.
-// TODO: We should definitly allow multiple loadings to happen
+// TODO: We should definitely allow multiple loadings to happen
 // simultaneously if we know the amount of free memory is enough.
 cudaError_t gmm_cudaLaunch(const char *entry)
 {
@@ -552,7 +553,7 @@ re_acquire:
 
 // TODO: provide two implementations - sync and async.
 // For async, use streamcallback to unpin if necessary.
-static int gmm_memcpy_dtoh(void *dst, void *src, unsigned long size)
+static int gmm_memcpy_dtoh(void *dst, const void *src, unsigned long size)
 {
 	if (nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyDeviceToHost,
 			pcontext->stream_dma) != cudaSuccess) {
@@ -569,7 +570,7 @@ static int gmm_memcpy_dtoh(void *dst, void *src, unsigned long size)
 }
 
 // TODO: sync and async.
-static int gmm_memcpy_htod(void *dst, void *src, unsigned long size)
+static int gmm_memcpy_htod(void *dst, const void *src, unsigned long size)
 {
 	if (nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyHostToDevice,
 			pcontext->stream_dma) != cudaSuccess) {
@@ -592,22 +593,24 @@ static void block_sync(struct region *r, int block)
 {
 	int dvalid = r->blocks[block].dev_valid;
 	int svalid = r->blocks[block].swp_valid;
-	unsigned long off1, off2;
+	unsigned long off, size;
 
 	// Nothing to sync if both are valid or both are invalid
 	if ((dvalid ^ svalid) == 0)
 		return;
+	if (!r->dev_addr || !r->swp_addr)
+		panic("block_sync");
 
-	off1 = block * BLOCKSIZE;
-	off2 = MIN(off1 + BLOCKSIZE, r->size);
+	off = block * BLOCKSIZE;
+	size = MIN(off + BLOCKSIZE, r->size) - off;
 	if (dvalid && !svalid) {
 		// Sync from device to host swap buffer
-		gmm_memcpy_dtoh(r->swp_addr + off1, r->dev_addr + off1, off2 - off1);
+		gmm_memcpy_dtoh(r->swp_addr + off, r->dev_addr + off, size);
 		r->blocks[block].swp_valid = 1;
 	}
 	else {
 		// Sync from host swap buffer to device
-		gmm_memcpy_htod(r->dev_addr + off1, r->swp_addr + off1, off2 - off1);
+		gmm_memcpy_htod(r->dev_addr + off, r->swp_addr + off, size);
 		r->blocks[block].dev_valid = 1;
 	}
 }
@@ -659,7 +662,7 @@ static void gmm_htod_block(
 					b->dev_valid = 0;
 			}
 			else {
-				// We don't need to pin the device memory because we are
+				// XXX: We don't need to pin the device memory because we are
 				// holding the lock of a swp_valid=0,dev_valid=1 block, which
 				// will prevent the evictor, if any, from freeing the device
 				// memory under us.
@@ -670,7 +673,7 @@ static void gmm_htod_block(
 			}
 		}
 	}
-	// full over-writing (its valid flags have been set in advance)
+	// Full over-writing (its valid flags have been set in advance).
 	else {
 		while (!try_acquire(&b->lock)) {
 			if (skip) {
@@ -679,9 +682,9 @@ static void gmm_htod_block(
 				return;
 			}
 		}
-		// acquire the lock and release immediately, to avoid data races with
-		// the evictor who's writing swp buffer
-		release(&r->blocks[block].lock);
+		// Acquire the lock and release immediately, to avoid data races with
+		// the evictor who happens to be writing the swp buffer.
+		release(&b->lock);
 		memcpy(r->swp_addr + offset, src, size);
 	}
 
@@ -730,7 +733,7 @@ static void gmm_htod_block(
 		}
 		else {
 			if (partial) {
-				// We don't need to pin the device memory because we are
+				// XXX: We don't need to pin the device memory because we are
 				// holding the lock of a swp_valid=0,dev_valid=1 block, which
 				// will prevent the evictor, if any, from freeing the device
 				// memory under us.
@@ -780,10 +783,10 @@ static int gmm_htod(
 	off = (unsigned long)(dst - r->swp_addr);
 	end = off + count;
 	ifirst = BLOCKIDX(off);
-	ilast = BLOCKIDX(off + (count - 1));
+	ilast = BLOCKIDX(end - 1);
 	skipped = (char *)malloc(ilast - ifirst + 1);
 	if (!skipped) {
-		GMM_DPRINT("failed to malloc for skipped[]: %s\n", strerror(errno));
+		GMM_DPRINT("malloc failed for skipped[]: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -793,20 +796,21 @@ static int gmm_htod(
 	// those blocks. This is one unique advantage of us compared with CPU
 	// memory management, where the OS usually does not have such interfaces
 	// or knowledge.
-	if (ifirst == ilast && count == BLOCKSIZE) {
+	if (ifirst == ilast &&
+		(count == BLOCKSIZE || (off == 0 && count == r->size))) {
 		r->blocks[ifirst].dev_valid = 0;
 		r->blocks[ifirst].swp_valid = 1;
 	}
 	else if (ifirst < ilast) {
-		if (off % BLOCKSIZE == 0) {
+		if (off % BLOCKSIZE == 0) {	// first block
 			r->blocks[ifirst].dev_valid = 0;
 			r->blocks[ifirst].swp_valid = 1;
 		}
-		if (end % BLOCKSIZE == 0 || end == r->size) {
+		if (end % BLOCKSIZE == 0 || end == r->size) {	// last block
 			r->blocks[ilast].dev_valid = 0;
 			r->blocks[ilast].swp_valid = 1;
 		}
-		for (iblock = ifirst + 1; iblock < ilast; iblock++) {
+		for (iblock = ifirst + 1; iblock < ilast; iblock++) {	// the rest
 			r->blocks[iblock].dev_valid = 0;
 			r->blocks[iblock].swp_valid = 1;
 		}
@@ -953,11 +957,11 @@ static int gmm_dtoh(
 
 	skipped = (char *)malloc(BLOCKIDX(end - 1) - ifirst + 1);
 	if (!skipped) {
-		GMM_DPRINT("failed to malloc for skipped[]: %s\n", strerror(errno));
+		GMM_DPRINT("malloc failed for skipped[]: %s\n", strerror(errno));
 		return -1;
 	}
 
-	// First, copy blocks whose swp buffers contain immediate, valid data
+	// First, copy blocks whose swp buffers contain immediate, valid data.
 	iblock = ifirst;
 	while (off < end) {
 		size = MIN(BLOCKUP(off), end) - off;
@@ -967,7 +971,7 @@ static int gmm_dtoh(
 		iblock++;
 	}
 
-	// Then, copy the rest blocks
+	// Then, copy the rest blocks.
 	off = (unsigned long)(src - r->swp_addr);
 	iblock = ifirst;
 	while (off < end) {
@@ -1038,25 +1042,62 @@ int victim_select(
 // This is not true if multiple loadings happen simultaneously,
 // but this region has been locked in region_load() anyway.
 // TODO: Should be able to skip if try_acquire fails (i.e., two passes).
-// TODO: Should also detect whether region is being freed.
 int region_evict(struct region *r)
 {
+	int nblocks = NRBLOCKS(r->size);
+	char *skipped;
 	int i;
 
 	if (!r->dev_addr)
 		panic("dev_addr is null");
 
-	for (i = 0; i < NRBLOCKS(r->size); i++) {
-		acquire(&r->blocks[i].lock);
-		if (!r->blocks[i].swp_valid)
-			block_sync(r, i);
-		release(&r->blocks[i].lock);
+	skipped = (char *)malloc(nblocks);
+	if (!skipped) {
+		GMM_DPRINT("malloc failed for skipped[]: %s\n", strerror(errno));
+		return -1;
 	}
+
+	// First round
+	for (i = 0; i < nblocks; i++) {
+		if (r->state == STATE_FREEING)
+			goto finish;
+		if (try_acquire(&r->blocks[i].lock)) {
+			if (!r->blocks[i].swp_valid)
+				block_sync(r, i);
+			release(&r->blocks[i].lock);
+			skipped[i] = 0;
+		}
+		else
+			skipped[i] = 1;
+	}
+
+	// Second round
+	for (i = 0; i < nblocks; i++) {
+		if (r->state == STATE_FREEING)
+			goto finish;
+		if (skipped[i]) {
+			acquire(&r->blocks[i].lock);
+			if (!r->blocks[i].swp_valid)
+				block_sync(r, i);
+			release(&r->blocks[i].lock);
+		}
+	}
+
+finish:
 	nv_cudaFree(r->dev_addr);
 	r->dev_addr = NULL;
-
+	region_inval(r, 0);		// Don't forget to invalidate device data copy
 	list_attached_del(pcontext, r);
+	acquire(&r->lock);
+	if (r->state == STATE_FREEING)
+		if (r->swp_addr) {
+			free(r->swp_addr);
+			r->swp_addr = NULL;
+		}
 	r->state = STATE_DETACHED;
+	release(&r->lock);
+
+	free(skipped);
 	return 0;
 }
 
@@ -1307,7 +1348,7 @@ void CUDART_CB gmm_kernel_callback(
 	free(pcb);
 }
 
-// Here we utilize CUDA 5.0's stream callback feature to capture kernel
+// Here we utilize CUDA 5+'s stream callback feature to capture kernel
 // finish event and unpin related regions accordingly.
 static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 {
