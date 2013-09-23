@@ -86,7 +86,7 @@ int start()
 		goto fail_mmap;
 	}
 
-	pglobal->mem_total = total;
+	pglobal->mem_total = total - 100000000;		// FIXME
 	latomic_set(&pglobal->mem_used, 0);
 	initlock(&pglobal->lock);
 	pglobal->nclients = 0;

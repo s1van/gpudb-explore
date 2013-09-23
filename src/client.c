@@ -126,13 +126,13 @@ long memsize_total()
 
 long memsize_free()
 {
-	long freesize = pglobal->mem_total - pglobal->mem_used;
+	long freesize = pglobal->mem_total - latomic_read(&pglobal->mem_used);
 	return freesize < 0 ? 0 : freesize;
 }
 
 long memsize_free2()
 {
-	return pglobal->mem_total - pglobal->mem_used;
+	return pglobal->mem_total - latomic_read(&pglobal->mem_used);
 }
 
 void update_attached(long delta)

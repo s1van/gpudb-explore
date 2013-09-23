@@ -87,6 +87,7 @@ void gmm_init(void)
 	} while (0);
 
 	initialized = 1;
+	GMM_DPRINT("gmm initialized\n");
 }
 
 // The library destructor.
@@ -96,6 +97,7 @@ void gmm_fini(void)
 	client_detach();
 	gmm_context_fini();
 	initialized = 0;
+	GMM_DPRINT("gmm finished\n");
 }
 
 GMM_EXPORT
@@ -117,7 +119,7 @@ cudaError_t cudaMalloc(void **devPtr, size_t size)
 	return ret;
 }
 
-// GMM-specific: allowing passing flags such as static read/write hints.
+// GMM-specific: allowing passing read/write hints.
 //GMM_EXPORT
 //cudaError_t cudaMallocEx(void **devPtr, size_t size, int flags)
 //{

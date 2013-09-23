@@ -1,3 +1,4 @@
+// This spinlock implementation is copied from MIT's xv6.
 #ifndef _GMM_SPINLOCK_H_
 #define _GMM_SPINLOCK_H_
 

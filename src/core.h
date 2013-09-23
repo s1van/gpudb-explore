@@ -42,8 +42,8 @@ struct block {
 // each block are maintained separately.
 struct region {
 	long size;				// size of the object in bytes
-	void *addr_dev;			// device memory address
-	void *addr_swp;			// host swap buffer address
+	void *dev_addr;			// device memory address
+	void *swp_addr;			// host swap buffer address
 	struct block *blocks;	// device memory blocks
 	struct spinlock lock;	// the lock that protects memory object state
 	region_state_t state;	// state of the object

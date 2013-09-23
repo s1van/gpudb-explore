@@ -122,7 +122,16 @@ int gmm_context_init()
 
 void gmm_context_fini()
 {
-	// TODO: free all dangling memory regions.
+	struct list_head *p;
+	struct region *r;
+
+	// Free all dangling memory regions.
+	while (!list_empty(&pcontext->list_alloced)) {
+		p = pcontext->list_alloced.next;
+		r = list_entry(p, struct region, entry_alloced);
+		if (!gmm_free(r))
+			list_move_tail(p, &pcontext->list_alloced);
+	}
 
 	nv_cudaStreamDestroy(pcontext->stream_dma);
 	nv_cudaStreamDestroy(pcontext->stream_kernel);
@@ -152,8 +161,8 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 	}
 	memset(r, 0, sizeof(*r));
 
-	r->addr_swp = malloc(size);
-	if (!r->addr_swp) {
+	r->swp_addr = malloc(size);
+	if (!r->swp_addr) {
 		GMM_DPRINT("malloc failed for host swap buffer: %s\n", strerror(errno));
 		free(r);
 		return cudaErrorMemoryAllocation;
@@ -163,12 +172,13 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 	r->blocks = (struct block *)malloc(sizeof(struct block) * nblocks);
 	if (!r->blocks) {
 		GMM_DPRINT("malloc failed for blocks array: %s\n", strerror(errno));
-		free(r->addr_swp);
+		free(r->swp_addr);
 		free(r);
 		return cudaErrorMemoryAllocation;
 	}
 	memset(r->blocks, 0, sizeof(struct block) * nblocks);
 
+	// TODO: test how CUDA runtime align the size of device memory allocations
 	r->size = (long)size;
 	initlock(&r->lock);
 	r->state = STATE_DETACHED;
@@ -176,7 +186,7 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 	r->rwhint.flags = HINT_DEFAULT;
 
 	list_alloced_add(pcontext, r);
-	*devPtr = r->addr_swp;
+	*devPtr = r->swp_addr;
 	return cudaSuccess;
 }
 
@@ -207,15 +217,15 @@ cudaError_t gmm_cudaMemcpyHtoD(
 
 	r = region_lookup(pcontext, dst);
 	if (!r) {
-		GMM_DPRINT("could not find device memory region containing %p\n", dst);
+		GMM_DPRINT("cannot find device memory region containing %p\n", dst);
 		return cudaErrorInvalidDevicePointer;
 	}
 	if (r->state == STATE_FREEING) {
 		GMM_DPRINT("region already freed\n");
 		return cudaErrorInvalidValue;
 	}
-	if (dst + count > r->addr_swp + r->size) {
-		GMM_DPRINT("htod copy overflow\n");
+	if (dst + count > r->swp_addr + r->size) {
+		GMM_DPRINT("htod device memory access out of boundary\n");
 		return cudaErrorInvalidValue;
 	}
 
@@ -237,15 +247,15 @@ cudaError_t gmm_cudaMemcpyDtoH(
 
 	r = region_lookup(pcontext, src);
 	if (!r) {
-		GMM_DPRINT("could not find device memory region containing %p\n", src);
+		GMM_DPRINT("cannot find device memory region containing %p\n", src);
 		return cudaErrorInvalidDevicePointer;
 	}
 	if (r->state == STATE_FREEING) {
 		GMM_DPRINT("region already freed\n");
 		return cudaErrorInvalidValue;
 	}
-	if (src + count > r->addr_swp + r->size) {
-		GMM_DPRINT("device memory access out of boundary\n");
+	if (src + count > r->swp_addr + r->size) {
+		GMM_DPRINT("dtoh device memory access out of boundary\n");
 		return cudaErrorInvalidValue;
 	}
 
@@ -343,7 +353,7 @@ cudaError_t gmm_cudaSetupArgument(
 
 	if (is_dptr) {
 		dargs[nargs].r = r;
-		dargs[nargs].off = (unsigned long)(*(void **)arg - r->addr_swp);
+		dargs[nargs].off = (unsigned long)(*(void **)arg - r->swp_addr);
 		if (nrefs > 0)
 			dargs[nargs].flags = rwflags[i];
 		else
@@ -465,7 +475,7 @@ reload:
 
 	// Push all device pointer arguments.
 	for (i = 0; i < nargs; i++) {
-		dargs[i].dptr = dargs[i].r->addr_dev + dargs[i].off;
+		dargs[i].dptr = dargs[i].r->dev_addr + dargs[i].off;
 		nv_cudaSetupArgument(&dargs[i].dptr, sizeof(void *), dargs[i].argoff);
 	}
 
@@ -495,7 +505,7 @@ cudaError_t gmm_cudaMemset(void * devPtr, int value, size_t count)
 // immediately freed. 0 - not freed yet; 1 - freed.
 static int gmm_free(struct region *r)
 {
-	// First, properly inspect/set region state
+	// First, properly inspect/set region state.
 re_acquire:
 	acquire(&r->lock);
 	switch (r->state) {
@@ -513,26 +523,24 @@ re_acquire:
 		r->state = STATE_FREEING;
 		release(&r->lock);
 		return 0;
-		break;
 	case STATE_FREEING:
 		// The evictor has not seen this region being freed
 		release(&r->lock);
 		sched_yield();
 		goto re_acquire;
-		break;
 	default: // STATE_DETACHED
 		break;
 	}
 	release(&r->lock);
 
-	// Now, this memory region can be freed
+	// Now, this memory region can be freed.
 	list_alloced_del(pcontext, r);
 	if (r->blocks)
 		free(r->blocks);
-	if (r->addr_swp)
-		free(r->addr_swp);
-	if (r->state == STATE_ATTACHED && r->addr_dev) {
-		nv_cudaFree(r->addr_dev);
+	if (r->swp_addr)
+		free(r->swp_addr);
+	if (r->dev_addr) {
+		nv_cudaFree(r->dev_addr);
 		latomic_sub(&pcontext->size_attached, r->size);
 		update_attached(-r->size);
 		update_detachable(-r->size);
@@ -542,7 +550,8 @@ re_acquire:
 	return 1;
 }
 
-// TODO: When to sync and how to sync needs to be re-thought thoroughly.
+// TODO: provide two implementations - sync and async.
+// For async, use streamcallback to unpin if necessary.
 static int gmm_memcpy_dtoh(void *dst, void *src, unsigned long size)
 {
 	if (nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyDeviceToHost,
@@ -551,7 +560,7 @@ static int gmm_memcpy_dtoh(void *dst, void *src, unsigned long size)
 		return -1;
 	}
 
-	if (cudaStreamSynchronize(pcontext->stream_dma) != cudaSuccess) {
+	if (nv_cudaStreamSynchronize(pcontext->stream_dma) != cudaSuccess) {
 		GMM_DPRINT("Sync over DMA stream failed\n");
 		return -1;
 	}
@@ -559,7 +568,7 @@ static int gmm_memcpy_dtoh(void *dst, void *src, unsigned long size)
 	return 0;
 }
 
-// TODO: When to sync and how to sync needs to be re-thought thoroughly.
+// TODO: sync and async.
 static int gmm_memcpy_htod(void *dst, void *src, unsigned long size)
 {
 	if (nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyHostToDevice,
@@ -568,7 +577,7 @@ static int gmm_memcpy_htod(void *dst, void *src, unsigned long size)
 		return -1;
 	}
 
-	if (cudaStreamSynchronize(pcontext->stream_dma) != cudaSuccess) {
+	if (nv_cudaStreamSynchronize(pcontext->stream_dma) != cudaSuccess) {
 		GMM_DPRINT("Sync over DMA stream failed\n");
 		return -1;
 	}
@@ -593,18 +602,18 @@ static void block_sync(struct region *r, int block)
 	off2 = MIN(off1 + BLOCKSIZE, r->size);
 	if (dvalid && !svalid) {
 		// Sync from device to host swap buffer
-		gmm_memcpy_dtoh(r->addr_swp + off1, r->addr_dev + off1, off2 - off1);
+		gmm_memcpy_dtoh(r->swp_addr + off1, r->dev_addr + off1, off2 - off1);
 		r->blocks[block].swp_valid = 1;
 	}
 	else {
 		// Sync from host swap buffer to device
-		gmm_memcpy_htod(r->addr_dev + off1, r->addr_swp + off1, off2 - off1);
+		gmm_memcpy_htod(r->dev_addr + off1, r->swp_addr + off1, off2 - off1);
 		r->blocks[block].dev_valid = 1;
 	}
 }
 
 // Copy a piece of data from $src to (the host swap buffer of) a block in $r.
-// $offset gives the offset of the destination address relative to $r->addr_swp.
+// $offset gives the offset of the destination address relative to $r->swp_addr.
 // $size is the size of data to be copied.
 // $block tells which block is being modified.
 // $skip specifies whether to skip copying if the block is being locked.
@@ -614,7 +623,7 @@ static void block_sync(struct region *r, int block)
 static void gmm_htod_block(
 		struct region *r,
 		unsigned long offset,
-		void *src,
+		const void *src,
 		unsigned long size,
 		int block,
 		int skip,
@@ -626,7 +635,7 @@ static void gmm_htod_block(
 	if ((offset % BLOCKSIZE) || (size < BLOCKSIZE && offset + size < r->size)) {
 		if (b->swp_valid || !b->dev_valid) {
 			// no locking needed
-			memcpy(r->addr_swp + offset, src, size);
+			memcpy(r->swp_addr + offset, src, size);
 			if (!b->swp_valid)
 				b->swp_valid = 1;
 			if (b->dev_valid)
@@ -643,7 +652,7 @@ static void gmm_htod_block(
 			}
 			if (b->swp_valid || !b->dev_valid) {
 				release(&r->blocks[block].lock);
-				memcpy(r->addr_swp + offset, src, size);
+				memcpy(r->swp_addr + offset, src, size);
 				if (!b->swp_valid)
 					b->swp_valid = 1;
 				if (b->dev_valid)
@@ -656,7 +665,7 @@ static void gmm_htod_block(
 				// memory under us.
 				block_sync(r, block);
 				release(&b->lock);
-				memcpy(r->addr_swp + offset, src, size);
+				memcpy(r->swp_addr + offset, src, size);
 				b->dev_valid = 0;
 			}
 		}
@@ -673,7 +682,7 @@ static void gmm_htod_block(
 		// acquire the lock and release immediately, to avoid data races with
 		// the evictor who's writing swp buffer
 		release(&r->blocks[block].lock);
-		memcpy(r->addr_swp + offset, src, size);
+		memcpy(r->swp_addr + offset, src, size);
 	}
 
 	if (skipped)
@@ -684,7 +693,7 @@ static void gmm_htod_block(
 static void gmm_htod_block(
 		struct region *r,
 		unsigned long offset,
-		void *src,
+		const void *src,
 		unsigned long size,
 		int block,
 		int skip,
@@ -696,7 +705,7 @@ static void gmm_htod_block(
 
 	if (b->swp_valid || !b->dev_valid) {
 		// no locking needed
-		memcpy(r->addr_swp + offset, src, size);
+		memcpy(r->swp_addr + offset, src, size);
 		if (!b->swp_valid)
 			b->swp_valid = 1;
 		if (b->dev_valid)
@@ -713,7 +722,7 @@ static void gmm_htod_block(
 		}
 		if (b->swp_valid || !b->dev_valid) {
 			release(&r->blocks[block].lock);
-			memcpy(r->addr_swp + offset, src, size);
+			memcpy(r->swp_addr + offset, src, size);
 			if (!b->swp_valid)
 				b->swp_valid = 1;
 			if (b->dev_valid)
@@ -732,7 +741,7 @@ static void gmm_htod_block(
 				b->swp_valid = 1;
 				release(&b->lock);
 			}
-			memcpy(r->addr_swp + offset, src, size);
+			memcpy(r->swp_addr + offset, src, size);
 			b->dev_valid = 0;
 		}
 	}
@@ -768,7 +777,7 @@ static int gmm_htod(
 	void *s = (void *)src;
 	char *skipped;
 
-	off = (unsigned long)(dst - r->addr_swp);
+	off = (unsigned long)(dst - r->swp_addr);
 	end = off + count;
 	ifirst = BLOCKIDX(off);
 	ilast = BLOCKIDX(off + (count - 1));
@@ -814,7 +823,7 @@ static int gmm_htod(
 	}
 
 	// Finally, copy the rest blocks, no skipping.
-	off = (unsigned long)(dst - r->addr_swp);
+	off = (unsigned long)(dst - r->swp_addr);
 	s = (void *)src;
 	for (iblock = ifirst; iblock <= ilast; iblock++) {
 		unsigned long size = MIN(BLOCKUP(off), end) - off;
@@ -838,21 +847,21 @@ static int gmm_htod(
 	unsigned long off, end, size;
 	int ifirst, ilast, iblock;
 	char *skipped;
-	void *s = src;
+	void *s = (void *)src;
 
-	off = (unsigned long)(dst - r->addr_swp);
+	off = (unsigned long)(dst - r->swp_addr);
 	end = off + count;
 	ifirst = BLOCKIDX(off);
 	ilast = BLOCKIDX(end - 1);
 	skipped = (char *)malloc(ilast - ifirst + 1);
 	if (!skipped) {
-		GMM_DPRINT("failed to malloc for skipped[]: %s\n", strerrno(errno));
+		GMM_DPRINT("malloc failed for skipped[]: %s\n", strerror(errno));
 		return -1;
 	}
 
 	// Copy data block by block, skipping blocks that are not available
-	// for immediate operation (very likely due to being evicted). skipped[]
-	// records whether a block was skipped.
+	// for immediate operation (very likely due to being evicted).
+	// skipped[] records whether each block was skipped.
 	for (iblock = ifirst; iblock <= ilast; iblock++) {
 		size = MIN(BLOCKUP(off), end) - off;
 		gmm_htod_block(r, off, s, size, iblock, 1, skipped + (iblock - ifirst));
@@ -861,8 +870,8 @@ static int gmm_htod(
 	}
 
 	// Then, copy the rest blocks, no skipping.
-	off = (unsigned long)(dst - r->addr_swp);
-	s = src;
+	off = (unsigned long)(dst - r->swp_addr);
+	s = (void *)src;
 	for (iblock = ifirst; iblock <= ilast; iblock++) {
 		size = MIN(BLOCKUP(off), end) - off;
 		if (skipped[iblock - ifirst])
@@ -888,7 +897,7 @@ static int gmm_dtoh_block(
 	struct block *b = r->blocks + iblock;
 
 	if (b->swp_valid) {
-		memcpy(dst, r->addr_swp + off, size);
+		memcpy(dst, r->swp_addr + off, size);
 		return 0;
 	}
 
@@ -902,7 +911,7 @@ static int gmm_dtoh_block(
 
 	if (b->swp_valid) {
 		release(&b->lock);
-		memcpy(dst, r->addr_swp + off, size);
+		memcpy(dst, r->swp_addr + off, size);
 	}
 	else if (!b->dev_valid) {
 		release(&b->lock);
@@ -919,7 +928,7 @@ static int gmm_dtoh_block(
 		// evictor, if any, from freeing the device memory under us.
 		block_sync(r, iblock);
 		release(&b->lock);
-		memcpy(dst, r->addr_swp + off, size);
+		memcpy(dst, r->swp_addr + off, size);
 	}
 
 	if (skipped)
@@ -937,7 +946,7 @@ static int gmm_dtoh(
 		const void *src,
 		size_t count)
 {
-	unsigned long off = (unsigned long)(src - r->addr_swp);
+	unsigned long off = (unsigned long)(src - r->swp_addr);
 	unsigned long end = off + count, size;
 	int ifirst = BLOCKIDX(off), iblock;
 	char *skipped;
@@ -959,7 +968,7 @@ static int gmm_dtoh(
 	}
 
 	// Then, copy the rest blocks
-	off = (unsigned long)(src - r->addr_swp);
+	off = (unsigned long)(src - r->swp_addr);
 	iblock = ifirst;
 	while (off < end) {
 		size = MIN(BLOCKUP(off), end) - off;
@@ -986,8 +995,8 @@ static struct region *region_lookup(struct gmm_context *ctx, const void *ptr)
 	acquire(&ctx->lock_alloced);
 	list_for_each(pos, &ctx->list_alloced) {
 		r = list_entry(pos, struct region, entry_alloced);
-		if ((unsigned long)ptr >= (unsigned long)r->addr_swp &&
-			(unsigned long)ptr < ((unsigned long)r->addr_swp + r->size)) {
+		if ((unsigned long)ptr >= (unsigned long)r->swp_addr &&
+			(unsigned long)ptr < ((unsigned long)r->swp_addr + r->size)) {
 			found = 1;
 			break;
 		}
@@ -1028,19 +1037,23 @@ int victim_select(
 // supposed to be accessing the region at the same time.
 // This is not true if multiple loadings happen simultaneously,
 // but this region has been locked in region_load() anyway.
+// TODO: Should be able to skip if try_acquire fails (i.e., two passes).
+// TODO: Should also detect whether region is being freed.
 int region_evict(struct region *r)
 {
 	int i;
 
-	if (!r->addr_dev)
-		panic("addr_dev is null");
+	if (!r->dev_addr)
+		panic("dev_addr is null");
 
 	for (i = 0; i < NRBLOCKS(r->size); i++) {
+		acquire(&r->blocks[i].lock);
 		if (!r->blocks[i].swp_valid)
 			block_sync(r, i);
+		release(&r->blocks[i].lock);
 	}
-	nv_cudaFree(r->addr_dev);
-	r->addr_dev = NULL;
+	nv_cudaFree(r->dev_addr);
+	r->dev_addr = NULL;
 
 	list_attached_del(pcontext, r);
 	r->state = STATE_DETACHED;
@@ -1167,7 +1180,7 @@ static int region_attach(
 
 	// Attach if current free memory space is larger than region size.
 	if (r->size <= memsize_free() &&
-		nv_cudaMalloc(&r->addr_dev, r->size) == cudaSuccess)
+		nv_cudaMalloc(&r->dev_addr, r->size) == cudaSuccess)
 		goto attach_success;
 
 	// Evict some device memory.
@@ -1178,8 +1191,8 @@ static int region_attach(
 		return ret;
 
 	// Try to attach again.
-	if (nv_cudaMalloc(&r->addr_dev, r->size) != cudaSuccess) {
-		r->addr_dev = NULL;
+	if (nv_cudaMalloc(&r->dev_addr, r->size) != cudaSuccess) {
+		r->dev_addr = NULL;
 		return 1;
 	}
 
