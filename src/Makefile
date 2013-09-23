@@ -24,7 +24,7 @@ endif
 CC := gcc
 NVCC := $(CUDAPATH)/bin/nvcc
 CFLAGS := -O -Wall -pthread -fPIC -fvisibility=hidden \
-	-I$(CUDAPATH)/include -DCUDAPATH=$(CUDAPATH) \
+	-I$(CUDAPATH)/include -DCUDAPATH=\"$(CUDAPATH)\" \
 	$(FLAG_DEBUG) $(FLAG_PROFILE) $(GMM_CONFIGS)
 LDFLAGS := -shared -pthread -ldl -fPIC
 

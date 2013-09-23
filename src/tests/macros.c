@@ -27,5 +27,7 @@ int main()
 //		printf("shit\n");
 //	}
 
+	printf("%s\n", AAA);	// AAA passed from gcc -D
+
 	return 0;
 }
