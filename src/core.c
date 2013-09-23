@@ -81,6 +81,13 @@ static void list_attached_del(struct gmm_context *ctx, struct region *r)
 	release(&ctx->lock_attached);
 }
 
+static void list_attached_mov(struct gmm_context *ctx, struct region *r)
+{
+	acquire(&ctx->lock_attached);
+	list_move(&r->entry_attached, &ctx->list_attached);
+	release(&ctx->lock_attached);
+}
+
 
 static inline void region_pin(struct region *r)
 {
@@ -1294,8 +1301,12 @@ static int region_load(
 		if ((ret = region_attach(r, 1, excls, nexcl)) != 0)
 			return ret;
 	}
-	else if (pin)
-		region_pin(r);
+	else {
+		if (pin)
+			region_pin(r);
+		// Update the region's position in the LRU list.
+		list_attached_mov(pcontext, r);
+	}
 
 	// Fetch data to device memory if necessary.
 	if (r->rwhint.flags & HINT_READ) {
