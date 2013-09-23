@@ -25,9 +25,8 @@ static int client_alloc()
 	acquire(&pglobal->lock);
 	if (pglobal->nclients < NCLIENTS) {
 		for (id = 0; id < NCLIENTS; id++) {
-			if (pglobal->clients[id].index == -1) {
+			if (pglobal->clients[id].index == -1)
 				break;
-			}
 		}
 	}
 	if (id >= 0 && id < NCLIENTS) {
@@ -105,8 +104,6 @@ fail_shm:
 	return -1;
 }
 
-// TODO: have to make sure operations are executed only when attach was
-// successful
 void client_detach() {
 	client_free(cid);
 	cid = -1;

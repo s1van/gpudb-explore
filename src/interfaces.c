@@ -79,8 +79,8 @@ void gmm_init(void)
 
 	// Before marking GMM context initialized, invoke an NV function
 	// to initialize CUDA runtime and let whatever memory regions
-	// allocated by CUDA runtime implicitly happen now. Those regions
-	// should be always attached and not managed by GMM runtime.
+	// implicitly required by CUDA runtime be allocated now. Those
+	// regions should be always attached and not managed by GMM runtime.
 	do {
 		size_t dummy;
 		nv_cudaMemGetInfo(&dummy, &dummy);
@@ -94,10 +94,12 @@ void gmm_init(void)
 __attribute__((destructor))
 void gmm_fini(void)
 {
-	client_detach();
-	gmm_context_fini();
-	initialized = 0;
-	GMM_DPRINT("gmm finished\n");
+	if (initialized) {
+		client_detach();
+		gmm_context_fini();
+		initialized = 0;
+		GMM_DPRINT("gmm finished\n");
+	}
 }
 
 GMM_EXPORT

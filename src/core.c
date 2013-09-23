@@ -211,7 +211,10 @@ cudaError_t gmm_cudaFree(void *devPtr)
 
 	if (!(r = region_lookup(pcontext, devPtr))) {
 		GMM_DPRINT("could not find memory region containing %p\n", devPtr);
-		return cudaErrorInvalidDevicePointer;
+		// XXX: this is a workaround for regions allocated by CUDA runtime.
+		// Return success even if devPtr is not found. FIXME!
+		return cudaSuccess;
+		//return cudaErrorInvalidDevicePointer;
 	}
 
 	if (gmm_free(r) < 0)
