@@ -101,8 +101,6 @@ struct victim {
 // TODO: for region_pin, change client's size_detachable if pinned first;
 // for region_unpin, change client's size_detachable if unpiined last.
 #define region_pinned(r)	atomic_read(&(r)->pinned)
-#define region_pin(r)		atomic_inc(&(r)->pinned)
-#define region_unpin(r)		atomic_dec(&(r)->pinned)
 
 
 // Invalidate all blocks in a region.

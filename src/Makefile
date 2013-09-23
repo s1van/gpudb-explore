@@ -7,8 +7,8 @@ CUDAPATH = /usr/local/cuda
 LIBGMM = libgmm.so
 
 # Source and object files needed to create $(LIBGMM)
-SRCS = common.c core.c interfaces.c msq.c replacement.c
-OBJS = common.o core.o interfaces.o msq.o replacement.o
+SRCS = client.c common.c core.c interfaces.c msq.c replacement.c
+OBJS = client.o common.o core.o interfaces.o msq.o replacement.o
 
 FLAG_DEBUG = -DGMM_DEBUG
 ifeq ($(ENABLE_DEBUG), 0)

@@ -81,6 +81,21 @@ static void list_attached_del(struct gmm_context *ctx, struct region *r)
 	release(&ctx->lock_attached);
 }
 
+
+static inline void region_pin(struct region *r)
+{
+	int pinned = atomic_inc(&(r)->pinned);
+	if (pinned == 0)
+		update_detachable(-r->size);
+}
+
+static inline void region_unpin(struct region *r)
+{
+	int pinned = atomic_dec(&(r)->pinned);
+	if (pinned == 1)
+		update_detachable(r->size);
+}
+
 // Initialize local GMM context.
 int gmm_context_init()
 {
@@ -431,7 +446,7 @@ extern int prio_kernel;
 // and DMAs. Ideally, kernels with nothing to load should be issued
 // first. Then the loadings of other kernels can be overlapped with
 // kernel executions.
-// TODO: We should definitely allow multiple loadings to happen
+// TODO: Maybe we should allow multiple loadings to happen
 // simultaneously if we know the amount of free memory is enough.
 cudaError_t gmm_cudaLaunch(const char *entry)
 {
@@ -441,8 +456,9 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 	long total = 0;
 	int i, ldret;
 
-	// NOTE: it is possible nrgns == 0 on return. Consider a
-	// kernel that only uses registers for example.
+	// NOTE: it is possible nrgns == 0 when regions_referenced
+	// returns. Consider a kernel that only uses registers, for
+	// example.
 	total = regions_referenced(&rgns, &nrgns);
 	if (total < 0 || total > memsize_total()) {
 		GMM_DPRINT("kernel requires too much device memory space (%ld)\n", \
@@ -1041,7 +1057,6 @@ int victim_select(
 // supposed to be accessing the region at the same time.
 // This is not true if multiple loadings happen simultaneously,
 // but this region has been locked in region_load() anyway.
-// TODO: Should be able to skip if try_acquire fails (i.e., two passes).
 int region_evict(struct region *r)
 {
 	int nblocks = NRBLOCKS(r->size);
@@ -1050,6 +1065,8 @@ int region_evict(struct region *r)
 
 	if (!r->dev_addr)
 		panic("dev_addr is null");
+	if (region_pinned(r))
+		panic("evicting a pinned region");
 
 	skipped = (char *)malloc(nblocks);
 	if (!skipped) {
@@ -1084,16 +1101,20 @@ int region_evict(struct region *r)
 	}
 
 finish:
+	list_attached_del(pcontext, r);
 	nv_cudaFree(r->dev_addr);
 	r->dev_addr = NULL;
-	region_inval(r, 0);		// Don't forget to invalidate device data copy
-	list_attached_del(pcontext, r);
+	latomic_sub(&pcontext->size_attached, r->size);
+	update_attached(-r->size);
+	update_detachable(-r->size);
+	region_inval(r, 0);
 	acquire(&r->lock);
-	if (r->state == STATE_FREEING)
+	if (r->state == STATE_FREEING) {
 		if (r->swp_addr) {
 			free(r->swp_addr);
 			r->swp_addr = NULL;
 		}
+	}
 	r->state = STATE_DETACHED;
 	release(&r->lock);
 
@@ -1226,9 +1247,7 @@ static int region_attach(
 
 	// Evict some device memory.
 	ret = gmm_evict(r->size, excls, nexcl);
-	if (ret < 0)
-		return ret;
-	if (ret > 0 && memsize_free() < r->size)
+	if (ret < 0 || (ret > 0 && memsize_free() < r->size))
 		return ret;
 
 	// Try to attach again.
@@ -1238,8 +1257,9 @@ static int region_attach(
 	}
 
 attach_success:
-	update_attached(r->size);
 	latomic_add(&pcontext->size_attached, r->size);
+	update_attached(r->size);
+	update_detachable(r->size);
 	if (pin)
 		region_pin(r);
 	// Reassure that the dev copies of all blocks are set to invalid.
@@ -1277,8 +1297,10 @@ static int region_load(
 	// Fetch data to device memory if necessary.
 	if (r->rwhint.flags & HINT_READ) {
 		for (i = 0; i < NRBLOCKS(r->size); i++) {
+			acquire(&r->blocks[i].lock);	// Though this is useless
 			if (!r->blocks[i].dev_valid)
 				block_sync(r, i);
+			release(&r->blocks[i].lock);
 		}
 	}
 

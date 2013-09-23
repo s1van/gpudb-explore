@@ -1,3 +1,5 @@
+#include <sys/mman.h>
+#include <sys/stat.h> /* For mode constants */
 #include <fcntl.h>
 #include <semaphore.h>
 #include <mqueue.h>
@@ -10,7 +12,7 @@
 #include "msq.h"
 
 
-sem_t sem_launch = SEM_FAILED;		// Guarding kernel launches
+sem_t *sem_launch = SEM_FAILED;		// Guarding kernel launches
 struct gmm_global *pglobal = NULL;	// Global shared memory
 int cid = -1;						// Id of this client
 
@@ -97,7 +99,7 @@ fail_mmap:
 	pglobal = NULL;
 	close(shmfd);
 fail_shm:
-	sem_close(GMM_SEM_LAUNCH);
+	sem_close(sem_launch);
 	sem_launch = SEM_FAILED;
 
 	return -1;
@@ -106,7 +108,7 @@ fail_shm:
 // TODO: have to make sure operations are executed only when attach was
 // successful
 void client_detach() {
-	client_free();
+	client_free(cid);
 	cid = -1;
 	msq_fini();
 	if (pglobal != NULL) {
@@ -114,7 +116,7 @@ void client_detach() {
 		pglobal = NULL;
 	}
 	if (sem_launch != SEM_FAILED) {
-		sem_close(GMM_SEM_LAUNCH);
+		sem_close(sem_launch);
 		sem_launch = SEM_FAILED;
 	}
 }
@@ -149,13 +151,13 @@ void launch_wait()
 {
 	int ret;
 	do {
-		ret = sem_wait(&sem_launch);
+		ret = sem_wait(sem_launch);
 	} while (ret == -1 && errno == EINTR);
 }
 
 void launch_signal()
 {
-	sem_post(&sem_launch);
+	sem_post(sem_launch);
 }
 
 // Get the id of the least recently used client with detachable
