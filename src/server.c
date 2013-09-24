@@ -28,8 +28,8 @@ int start()
 		exit(-1);
 	}
 
-	fprintf(stderr, "Total GPU memory: %u bytes.\n", total);
-	fprintf(stderr, "Free GPU memory: %u bytes.\n", free);
+	fprintf(stderr, "Total GPU memory: %lu bytes.\n", total);
+	fprintf(stderr, "Free GPU memory: %lu bytes.\n", free);
 	fprintf(stderr, "Setting GMM ...\n");
 
 	// Create the semaphore for syncing kernel launches.

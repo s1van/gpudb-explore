@@ -48,7 +48,7 @@ gmmctl : server.o
 	$(NVCC) -L$(CUDAPATH)/lib64 -arch=sm_20 $^ -o $@
 
 server.o : server.c protocol.h spinlock.h list.h atomic.h
-	$(NVCC) -c -I$(CUDAPATH)/include -arch=sm_20 $< -o $@
+	$(NVCC) -c --compiler-options -Wall -I$(CUDAPATH)/include -arch=sm_20 $< -o $@
 
 $(LIBGMM): $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) -o $@
