@@ -8,8 +8,6 @@ import os
 def gen_testcase(fpath):
     # Get name of the test case
     func = os.path.split(fpath)[1].split('.')[0]
-    if func == "main":  # main.c is not a test file
-        return 0
     
     # Get comment of the test case, i.e., the starting comment texts
     # in fpath.
