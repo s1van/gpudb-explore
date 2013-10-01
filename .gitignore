@@ -1,5 +1,6 @@
 .project
 .cproject
+.pydevproject
 .DS_Store
 *.o
 *.bak
