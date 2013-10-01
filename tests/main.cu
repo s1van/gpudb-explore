@@ -17,12 +17,12 @@ int main()
 	int i, ret = 0, tret = 0;
 
 	for (i = 0; i < ncases; i++) {
-		fprintf(stderr, "Testing %s\n", testcases[i].comment);
+		fprintf(stderr, "[gmm:test] Testing %s\n", testcases[i].comment);
 		tret = testcases[i].func();
 		if (tret == 0)
-			fprintf(stderr, "Test passed\n\n");
+			fprintf(stderr, "[gmm:test] Test passed\n\n");
 		else {
-			fprintf(stderr, "Test failed: %d\n\n", tret);
+			fprintf(stderr, "[gmm:test] Test failed: %d\n\n", tret);
 			ret = -1;
 		}
 	}

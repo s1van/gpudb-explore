@@ -8,7 +8,7 @@ TMPPATH = ./tmp
 
 # Compiler/linker settings
 NVCC := $(CUDAPATH)/bin/nvcc
-CFLAGS := -c -O --compiler-options -Wall -arch=sm_20 \
+CFLAGS := -c --compiler-options -Wall -arch=sm_20 \
 	-I$(CUDAPATH)/include -I$(GMMPATH)
 LDFLAGS := -L$(CUDAPATH)/lib64
 
@@ -25,20 +25,20 @@ $(TMPPATH) :
 
 $(TESTBINS) : $$@.o
 	@./tcgen.py $<
-	@$(NVCC) $(CFLAGS) main.c -o $(TMPPATH)/main.o
+	@$(NVCC) $(CFLAGS) main.cu -o $(TMPPATH)/main.o
 	$(NVCC) $(LDFLAGS) $(TMPPATH)/main.o $< -o $@
 	-@rm $(TMPPATH)/main.o
 
-$(TMPPATH)/%.o : %.c
+$(TMPPATH)/%.o : %.cu
 	$(NVCC) $(CFLAGS) $< -o $@
 
 # No rules for source files
 %.c : ;
 
 $(TESTS) : $(TMPPATH)/$$@
-	$(GMMPATH)/gmmctl --start
+	@$(GMMPATH)/gmmctl --start
 	LD_PRELOAD=$(GMMPATH)/libgmm.so $(TMPPATH)/$@
-	$(GMMPATH)/gmmctl --stop
+	@$(GMMPATH)/gmmctl --stop
 
 test : $(TESTS)
 
