@@ -7,4 +7,6 @@ struct test_case
 	char *comment;
 };
 
+#define GMM_TPRINT(fmt, arg...) fprintf(stderr, "[gmm:test] " fmt, ##arg)
+
 #endif
