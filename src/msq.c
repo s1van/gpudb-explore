@@ -185,7 +185,7 @@ int msq_init()
 	}
 
 	sprintf(qname, "/gmm_cli_%d", gettid());
-	mqid = mq_open(qname, O_RDONLY | O_CREAT | O_EXCL, 0422, NULL);
+	mqid = mq_open(qname, O_RDONLY | O_CREAT | O_EXCL, 0622, NULL);
 	if (mqid == (mqd_t) -1) {
 		GMM_DPRINT("failed to create message queue: %s\n", strerror(errno));
 		return -1;
@@ -216,6 +216,7 @@ void msq_fini()
 		mq_close(mqid);
 		mq_unlink(qname);
 		mqid = (mqd_t) -1;
+		pthread_cancel(tid_msq);
 		pthread_join(tid_msq, NULL);
 		pthread_cond_destroy(&cond_ack);
 		pthread_mutex_destroy(&mutx_ack);
