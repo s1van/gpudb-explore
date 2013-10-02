@@ -1,6 +1,8 @@
 #ifndef _GMM_TEST_H_
 #define _GMM_TEST_H_
 
+#include <stdio.h>
+
 struct test_case
 {
 	int (*func)(void);
