@@ -47,7 +47,7 @@ static int gmm_dtoh(
 		size_t count);
 static int gmm_load(struct region **rgns, int nrgns);
 static int gmm_launch(const char *entry, struct region **rgns, int nrgns);
-static struct region *region_lookup(struct gmm_context *ctx, const void *ptr);
+struct region *region_lookup(struct gmm_context *ctx, const void *ptr);
 
 // The GMM context for this process
 struct gmm_context *pcontext = NULL;
@@ -1016,7 +1016,7 @@ static int gmm_dtoh(
 // Look up a memory object by the ptr passed from user program.
 // ptr should fall within the virtual memory area of the host swap buffer of
 // the memory object, if it can be found.
-static struct region *region_lookup(struct gmm_context *ctx, const void *ptr)
+struct region *region_lookup(struct gmm_context *ctx, const void *ptr)
 {
 	struct region *r = NULL;
 	struct list_head *pos;

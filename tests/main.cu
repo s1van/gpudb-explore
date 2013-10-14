@@ -20,9 +20,9 @@ int main()
 		fprintf(stderr, "[gmm:test] Testing %s\n", testcases[i].comment);
 		tret = testcases[i].func();
 		if (tret == 0)
-			fprintf(stderr, "[gmm:test] Test passed\n\n");
+			fprintf(stderr, "[gmm:test] Test passed\n");
 		else {
-			fprintf(stderr, "[gmm:test] Test failed: %d\n\n", tret);
+			fprintf(stderr, "[gmm:test] Test failed: %d\n", tret);
 			ret = -1;
 		}
 	}

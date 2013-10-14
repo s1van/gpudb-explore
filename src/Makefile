@@ -6,9 +6,10 @@ CUDAPATH = /usr/local/cuda
 # Name of the GMM shared library
 LIBGMM = libgmm.so
 
-# Source and object files needed to create $(LIBGMM)
-SRCS = client.c common.c core.c interfaces.c msq.c replacement.c
-OBJS = client.o common.o core.o interfaces.o msq.o replacement.o
+# Files needed to create $(LIBGMM)
+SRCS = client.c common.c core.c interfaces.c msq.c replacement.c debug.c
+
+OBJS = $(SRCS:.c=.o)
 
 FLAG_DEBUG = -DGMM_DEBUG
 ifeq ($(ENABLE_DEBUG), 0)
@@ -48,7 +49,8 @@ gmmctl : server.o
 	$(NVCC) -L$(CUDAPATH)/lib64 -arch=sm_20 $^ -o $@
 
 server.o : server.c protocol.h spinlock.h list.h atomic.h
-	$(NVCC) -c --compiler-options -Wall -I$(CUDAPATH)/include -arch=sm_20 $< -o $@
+	$(NVCC) -c --compiler-options -Wall \
+		-I$(CUDAPATH)/include -arch=sm_20 $< -o $@
 
 $(LIBGMM): $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) -o $@

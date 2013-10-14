@@ -13,7 +13,7 @@
 
 #include "protocol.h"
 
-int start()
+int start(size_t mem_total)
 {
 	struct gmm_global *pglobal;
 	cudaError_t ret;
@@ -30,6 +30,11 @@ int start()
 
 	fprintf(stderr, "Total GPU memory: %lu bytes.\n", total);
 	fprintf(stderr, "Free GPU memory: %lu bytes.\n", free);
+	if (mem_total > 0 && mem_total <= total)
+		total = mem_total;
+	else
+		total -= 200000000;		// FIXME
+	fprintf(stderr, "Use GPU memory: %lu bytes.\n", total);
 	fprintf(stderr, "Setting GMM ...\n");
 
 	// Create the semaphore for syncing kernel launches.
@@ -86,7 +91,7 @@ int start()
 		goto fail_mmap;
 	}
 
-	pglobal->mem_total = total - 100000000;		// FIXME
+	pglobal->mem_total = total;
 	latomic_set(&pglobal->mem_used, 0);
 	initlock(&pglobal->lock);
 	pglobal->nclients = 0;
@@ -128,45 +133,67 @@ int stop()
 	return 0;
 }
 
-int restart()
+int restart(size_t mem_total)
 {
 	stop();
-	return start();
+	return start(mem_total);
 }
 
 int main(int argc, char *argv[])
 {
-	struct option options[4];
-	char *opts = "ser";
+	struct option options[5];
+	char *opts = "serm:";
+	int command = '\0';
+	long mem_total = 0;
 	int c, ret = 0;
 
-	memset(options, 0, sizeof(options[0]) * 4);
+	memset(options, 0, sizeof(options[0]) * 5);
 	options[0].name = "start";
 	options[0].val = 's';
 	options[1].name = "stop";
 	options[1].val = 'e';
 	options[2].name = "restart";
 	options[2].val = 'r';
+	options[3].name = "mem-size";
+	options[3].val = 'm';
+	options[3].has_arg = 1;
 
 	while ((c = getopt_long(argc, argv, opts, options, NULL)) != -1) {
 		switch (c) {
 		case 's':
-			ret = start();
+			command = 's';
 			break;
 		case 'e':
-			ret = stop();
+			command = 'e';
 			break;
 		case 'r':
-			ret = restart();
+			command = 'r';
+			break;
+		case 'm':
+			mem_total = atol(optarg);
 			break;
 		case '?':
-			fprintf(stderr, "Unknown option %c\n", c);
+			if (optopt == 'm')
+				fprintf(stderr, "Please specify memory size\n");
+			else
+				fprintf(stderr, "Unknown option %c\n", c);
 			return -1;
 			break;
 		default:
 			abort();
 			break;
 		}
+	}
+
+	if (command == 's')
+		ret = start(mem_total);
+	else if (command == 'e')
+		ret = stop();
+	else if (command == 'r')
+		ret =restart(mem_total);
+	else {
+		fprintf(stderr, "No action specified\n");
+		ret = -1;
 	}
 
 	return ret;

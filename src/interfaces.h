@@ -1,7 +1,7 @@
 #ifndef _GMM_INTERFACES_H_
 #define _GMM_INTERFACES_H_
 
-#define _GNU_SOURCE		// or use INTERCEPT_CUDA2
+#define _GNU_SOURCE		// __USE_GNU
 #include <dlfcn.h>		/* header required for dlopen() and dlsym() */
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +17,7 @@
 #define CUDA_CURT_PATH  "/usr/local/cuda/lib64/libcudart.so"
 #endif
 
-/* check whether dlsym returned successfully */
+/* Check whether dlsym returned successfully */
 #define  TREAT_ERROR()                          \
   do {                                          \
     char * __error;                             \
@@ -27,12 +27,11 @@
     }                                           \
   }while(0)
 
-/* interception function func and store its previous value into var */
+/* Intercept function func and store its previous value into var */
 #define INTERCEPT_CUDA(func, var)       \
 do {                                    \
         if(var) break;                  \
-        void *__handle = RTLD_NEXT;     \
-        var = (typeof(var)) (uintptr_t) dlsym(__handle, func);  \
+        var = (typeof(var))dlsym(RTLD_NEXT, func);  \
         TREAT_ERROR();                  \
 } while(0)
 
@@ -40,7 +39,7 @@ do {                                    \
 do {                                    \
         if(var) break;                  \
         void *__handle = dlopen(CUDA_CURT_PATH, RTLD_LOCAL | RTLD_LAZY);    \
-        var = (typeof(var)) (uintptr_t) dlsym(__handle, func);  \
+        var = (typeof(var))dlsym(__handle, func);  \
         TREAT_ERROR();                  \
 } while(0)
 

@@ -14,7 +14,7 @@ LDFLAGS := -L$(CUDAPATH)/lib64
 
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
-.PHONY : all test $(TESTS)
+.PHONY : all test setup cleanup $(TESTS)
 
 TESTBINS := $(addprefix $(TMPPATH)/,$(TESTS))
 
@@ -36,11 +36,18 @@ $(TMPPATH)/%.o : %.cu
 %.c : ;
 
 $(TESTS) : $(TMPPATH)/$$@
-	@$(GMMPATH)/gmmctl --start
-	LD_PRELOAD=$(GMMPATH)/libgmm.so $(TMPPATH)/$@
-	@$(GMMPATH)/gmmctl --stop
+	@echo "================================================================"
+	@LD_PRELOAD=$(GMMPATH)/libgmm.so $(TMPPATH)/$@
+	@echo ""
 
-test : $(TESTS)
+test : setup $(TESTS) cleanup
+
+setup:
+	@$(GMMPATH)/gmmctl --start
+	@echo ""
+
+cleanup:
+	@$(GMMPATH)/gmmctl --stop
 
 clean:
 	-@rm $(TESTBINS) $(TMPPATH)/*.o testcases.h
