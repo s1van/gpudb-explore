@@ -1,5 +1,5 @@
 # EDIT ME: Test cases
-TESTS = test_init_fini test_malloc
+TESTS = test_init_fini test_malloc test_memcpy
 
 # Paths
 CUDAPATH = /usr/local/cuda
