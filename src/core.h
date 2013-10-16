@@ -27,7 +27,6 @@ struct rwhint {
 };
 
 // Device memory block.
-#define BLOCKSIZE		(4096 * 1024)
 struct block {
 	int dev_valid;			// if data copy on device is valid
 	int swp_valid;			// if data copy in host swap buffer is valid
@@ -93,6 +92,10 @@ struct victim {
 };
 
 #define MIN(x, y)	((x) < (y) ? (x) : (y))
+
+#define BLOCKSIZE			(4096 * 1024)
+#define BLOCKSHIFT			22
+#define BLOCKMASK			(~(BLOCKSIZE - 1))
 
 #define NRBLOCKS(size)		(((size) + BLOCKSIZE - 1) / BLOCKSIZE)
 #define BLOCKIDX(offset)	((unsigned long)(offset) / BLOCKSIZE)

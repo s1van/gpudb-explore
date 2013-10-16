@@ -83,9 +83,8 @@ void gmm_init(void)
 	// implicitly required by CUDA runtime be allocated now. Those
 	// regions should be always attached and not managed by GMM runtime.
 	do {
-		size_t dummy1, dummy2;
-		nv_cudaMemGetInfo(&dummy1, &dummy2);
-		GMM_DPRINT("free: %lu total: %lu\n", dummy1, dummy2);
+		size_t dummy;
+		nv_cudaMemGetInfo(&dummy, &dummy);
 	} while (0);
 
 	initialized = 1;
@@ -109,8 +108,10 @@ cudaError_t cudaMalloc(void **devPtr, size_t size)
 {
 	cudaError_t ret;
 
-	if (initialized)
+	if (initialized) {
 		ret = gmm_cudaMalloc(devPtr, size);
+//		gmm_print_dptr("cudaMalloc", *devPtr);
+	}
 	else {
 		// TODO: we need to remember those device memory allocated
 		// before GMM was initialized, so that later when they are
@@ -138,8 +139,10 @@ cudaError_t cudaFree(void *devPtr)
 {
 	cudaError_t ret;
 
-	if (initialized)
+	if (initialized) {
+//		gmm_print_dptr("cudaFree", devPtr);
 		ret = gmm_cudaFree(devPtr);
+	}
 	else {
 		GMM_DPRINT("warning: cudaFree called outside of GMM\n");
 		ret = nv_cudaFree(devPtr);
@@ -160,8 +163,12 @@ cudaError_t cudaMemcpy(
 	if (initialized) {
 		if (kind == cudaMemcpyHostToDevice)
 			ret = gmm_cudaMemcpyHtoD(dst, src, count);
-		else
+		else if (kind == cudaMemcpyDeviceToHost)
 			ret = gmm_cudaMemcpyDtoH(dst, src, count);
+		else {
+			GMM_DPRINT("unsupported cudaMemcpyKind\n");
+			ret = cudaErrorInvalidValue;
+		}
 	}
 	else {
 		GMM_DPRINT("warning: cudaMemcpy called outside of GMM\n");

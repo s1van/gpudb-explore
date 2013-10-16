@@ -237,12 +237,14 @@ cudaError_t gmm_cudaMemcpyHtoD(
 {
 	struct region *r;
 
+//	GMM_DPRINT("gmm_cudaMemcpyHtoD called\n");
+
 	if (count <= 0)
 		return cudaErrorInvalidValue;
 
 	r = region_lookup(pcontext, dst);
 	if (!r) {
-		GMM_DPRINT("cannot find device memory region containing %p\n", dst);
+		GMM_DPRINT("cannot find region containing %p\n", dst);
 		return cudaErrorInvalidDevicePointer;
 	}
 	if (r->state == STATE_FREEING) {
@@ -250,7 +252,7 @@ cudaError_t gmm_cudaMemcpyHtoD(
 		return cudaErrorInvalidValue;
 	}
 	if (dst + count > r->swp_addr + r->size) {
-		GMM_DPRINT("htod device memory access out of boundary\n");
+		GMM_DPRINT("htod memory copy out of region boundary\n");
 		return cudaErrorInvalidValue;
 	}
 
@@ -266,6 +268,8 @@ cudaError_t gmm_cudaMemcpyDtoH(
 		size_t count)
 {
 	struct region *r;
+
+//	GMM_DPRINT("gmm_cudaMemcpyDtoH called\n");
 
 	if (count <= 0)
 		return cudaErrorInvalidValue;
@@ -730,7 +734,11 @@ static void gmm_htod_block(
 {
 	struct block *b = r->blocks + block;
 	int partial = (offset % BLOCKSIZE) ||
-			(size < BLOCKSIZE && offset + size < r->size);
+			(size < BLOCKSIZE && (offset + size) < r->size);
+
+//	GMM_DPRINT("gmm_htod_block: r(%p) offset(%lu) src(%p)" \
+//			" size(%lu) block(%d) partial(%d)\n", \
+//			r, offset, src, size, block, partial);
 
 	if (b->swp_valid || !b->dev_valid) {
 		// no locking needed
@@ -750,7 +758,7 @@ static void gmm_htod_block(
 			}
 		}
 		if (b->swp_valid || !b->dev_valid) {
-			release(&r->blocks[block].lock);
+			release(&b->lock);
 			memcpy(r->swp_addr + offset, src, size);
 			if (!b->swp_valid)
 				b->swp_valid = 1;
@@ -926,8 +934,14 @@ static int gmm_dtoh_block(
 {
 	struct block *b = r->blocks + iblock;
 
+//	GMM_DPRINT("gmm_dtoh_block: r(%p) dst(%p) off(%lu)" \
+//			" size(%lu) block(%d) swp_valid(%d) dev_valid(%d)\n", \
+//			r, dst, off, size, iblock, b->swp_valid, b->dev_valid);
+
 	if (b->swp_valid) {
 		memcpy(dst, r->swp_addr + off, size);
+		if (skipped)
+			*skipped = 0;
 		return 0;
 	}
 
@@ -979,6 +993,7 @@ static int gmm_dtoh(
 	unsigned long off = (unsigned long)(src - r->swp_addr);
 	unsigned long end = off + count, size;
 	int ifirst = BLOCKIDX(off), iblock;
+	void *d = dst;
 	char *skipped;
 
 	skipped = (char *)malloc(BLOCKIDX(end - 1) - ifirst + 1);
@@ -991,8 +1006,8 @@ static int gmm_dtoh(
 	iblock = ifirst;
 	while (off < end) {
 		size = MIN(BLOCKUP(off), end) - off;
-		gmm_dtoh_block(r, dst, off, size, iblock, 1, skipped + iblock - ifirst);
-		dst += size;
+		gmm_dtoh_block(r, d, off, size, iblock, 1, skipped + iblock - ifirst);
+		d += size;
 		off += size;
 		iblock++;
 	}
@@ -1000,11 +1015,12 @@ static int gmm_dtoh(
 	// Then, copy the rest blocks.
 	off = (unsigned long)(src - r->swp_addr);
 	iblock = ifirst;
+	d = dst;
 	while (off < end) {
 		size = MIN(BLOCKUP(off), end) - off;
 		if (skipped[iblock - ifirst])
-			gmm_dtoh_block(r, dst, off, size, iblock, 0, NULL);
-		dst += size;
+			gmm_dtoh_block(r, d, off, size, iblock, 0, NULL);
+		d += size;
 		off += size;
 		iblock++;
 	}

@@ -9,8 +9,8 @@
 int test_memcpy()
 {
 	void *dptr = NULL, *ptr, *ptr2;
-	size_t size = 1024 * 1024 * 10;
-	int i, ret = 0;
+	size_t size = 1024 * 1024 * 10, i;
+	int ret = 0;
 
 	ptr = malloc(size);
 	if (!ptr) {
@@ -18,7 +18,7 @@ int test_memcpy()
 		return -1;
 	}
 	for(i = 0; i < size; i += 4096)
-		*(char *)(ptr + i) = 'x';
+		*((char *)ptr + i) = 'x';
 
 	if (cudaMalloc(&dptr, size) != cudaSuccess) {
 		GMM_TPRINT("cudaMalloc failed\n");
@@ -31,6 +31,7 @@ int test_memcpy()
 		ret = -1;
 		goto finish;
 	}
+	GMM_TPRINT("cudaMemcpyHostToDevice succeeded\n");
 
 	ptr2 = malloc(size);
 	if (!ptr2) {
@@ -45,11 +46,12 @@ int test_memcpy()
 		ret = -1;
 		goto finish;
 	}
+	GMM_TPRINT("cudaMemcpyDeviceToHost succeeded\n");
 
 	for(i = 0; i < size; i += 4096)
-		if (*(char *)(ptr2 + i) != 'x') {
-			GMM_TPRINT("verification failed at i = %d (*ptr2 = %d)\n", i, \
-					*(char *)(ptr2 + i));
+		if (*((char *)ptr2 + i) != 'x') {
+			GMM_TPRINT("verification failed at i = %lu (*ptr2 = %d)\n", i, \
+					*((char *)ptr2 + i));
 			free(ptr2);
 			ret = -1;
 			goto finish;
