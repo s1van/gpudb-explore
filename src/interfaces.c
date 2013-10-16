@@ -108,10 +108,8 @@ cudaError_t cudaMalloc(void **devPtr, size_t size)
 {
 	cudaError_t ret;
 
-	if (initialized) {
+	if (initialized)
 		ret = gmm_cudaMalloc(devPtr, size);
-//		gmm_print_dptr("cudaMalloc", *devPtr);
-	}
 	else {
 		// TODO: we need to remember those device memory allocated
 		// before GMM was initialized, so that later when they are
@@ -139,10 +137,8 @@ cudaError_t cudaFree(void *devPtr)
 {
 	cudaError_t ret;
 
-	if (initialized) {
-//		gmm_print_dptr("cudaFree", devPtr);
+	if (initialized)
 		ret = gmm_cudaFree(devPtr);
-	}
 	else {
 		GMM_DPRINT("warning: cudaFree called outside of GMM\n");
 		ret = nv_cudaFree(devPtr);
@@ -299,6 +295,8 @@ GMM_EXPORT
 cudaError_t cudaReference(int which_arg, int flags)
 {
 	int i;
+
+	GMM_DPRINT("cudaReference: %d %d\n", which_arg, flags);
 
 	if (!initialized)
 		return cudaErrorInitializationError;

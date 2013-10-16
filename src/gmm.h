@@ -13,7 +13,7 @@ extern "C" {
 // The GMM extensions to CUDA runtime interfaces. Interface
 // implementations reside in interfaces.c.
 cudaError_t cudaSetKernelPrio(int prio);
-cudaError_t cudaReference(int which_arg);
+cudaError_t cudaReference(int which_arg, int flags);
 
 #ifdef __cplusplus
 }

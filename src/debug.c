@@ -12,9 +12,11 @@ struct region *region_lookup(struct gmm_context *ctx, const void *ptr);
 extern struct gmm_context *pcontext;
 
 // Print info of the region containing %dptr
-void gmm_print_dptr(const char *msg, const void *dptr)
-{
 #ifdef GMM_DEBUG
+GMM_EXPORT
+#endif
+void gmm_print_dptr(const void *dptr)
+{
 	struct region *r;
 
 	r = region_lookup(pcontext, dptr);
@@ -23,10 +25,9 @@ void gmm_print_dptr(const char *msg, const void *dptr)
 		return;
 	}
 
-	GMM_DPRINT("%s: printing dptr %p (%p)\n", msg, dptr, r);
+	GMM_DPRINT("printing dptr %p (%p)\n", dptr, r);
 	GMM_DPRINT("\tsize: %ld\t\tstate: %d\n", r->size, r->state);
 	GMM_DPRINT("\tdev_addr: %p\t\tswp_addr: %p\n", r->dev_addr, r->swp_addr);
 	GMM_DPRINT("\tpinned: %d\t\trwhint: %x\n", atomic_read(&r->pinned), \
 			(unsigned int)(r->rwhint.flags));
-#endif
 }

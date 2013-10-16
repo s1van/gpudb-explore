@@ -4,6 +4,7 @@
 
 #include "test.h"
 #include "gmm.h"
+#include "debug.h"
 
 int test_malloc()
 {
@@ -16,12 +17,11 @@ int test_malloc()
 			GMM_TPRINT("cudaMalloc failed\n");
 			return -1;
 		}
-		GMM_TPRINT("dptr = %p\n", dptr);
+		//gmm_print_dptr(dptr);
 		if (cudaFree(dptr) != cudaSuccess) {
 			GMM_TPRINT("cudaFree failed\n");
 			return -1;
 		}
-		GMM_TPRINT("region freed\n");
 		size *= 2;
 	}
 

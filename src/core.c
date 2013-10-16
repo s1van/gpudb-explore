@@ -318,6 +318,7 @@ cudaError_t gmm_cudaConfigureCall(
 		size_t sharedMem,
 		cudaStream_t stream)
 {
+	GMM_DPRINT("gmm_cudaConfigureCall: %d %d\n", gridDim.x, blockDim.x);
 	stream_issue = pcontext->stream_kernel;
 	return nv_cudaConfigureCall(gridDim, blockDim, sharedMem, stream_issue);
 }
@@ -350,6 +351,8 @@ cudaError_t gmm_cudaSetupArgument(
 	cudaError_t ret;
 	int is_dptr = 0;
 	int i = 0;
+
+	GMM_DPRINT("gmm_cudaSetupArgument: %lu %lu %d\n", size, offset, nrefs);
 
 	// Test whether this argument is a device memory pointer.
 	// If it is, record it and postpone its pushing until cudaLaunch.
@@ -469,6 +472,8 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 	int nrgns = 0;
 	long total = 0;
 	int i, ldret;
+
+	GMM_DPRINT("gmm_cudaLaunch called\n");
 
 	// NOTE: it is possible nrgns == 0 when regions_referenced
 	// returns. Consider a kernel that only uses registers, for
@@ -736,10 +741,10 @@ static void gmm_htod_block(
 	int partial = (offset % BLOCKSIZE) ||
 			(size < BLOCKSIZE && (offset + size) < r->size);
 
-//	GMM_DPRINT("gmm_htod_block: r(%p) offset(%lu) src(%p)" \
-//			" size(%lu) block(%d) partial(%d)\n", \
-//			r, offset, src, size, block, partial);
-
+/*	GMM_DPRINT("gmm_htod_block: r(%p) offset(%lu) src(%p)" \
+			" size(%lu) block(%d) partial(%d)\n", \
+			r, offset, src, size, block, partial);
+*/
 	if (b->swp_valid || !b->dev_valid) {
 		// no locking needed
 		memcpy(r->swp_addr + offset, src, size);
@@ -934,10 +939,10 @@ static int gmm_dtoh_block(
 {
 	struct block *b = r->blocks + iblock;
 
-//	GMM_DPRINT("gmm_dtoh_block: r(%p) dst(%p) off(%lu)" \
-//			" size(%lu) block(%d) swp_valid(%d) dev_valid(%d)\n", \
-//			r, dst, off, size, iblock, b->swp_valid, b->dev_valid);
-
+/*	GMM_DPRINT("gmm_dtoh_block: r(%p) dst(%p) off(%lu)" \
+			" size(%lu) block(%d) swp_valid(%d) dev_valid(%d)\n", \
+			r, dst, off, size, iblock, b->swp_valid, b->dev_valid);
+*/
 	if (b->swp_valid) {
 		memcpy(dst, r->swp_addr + off, size);
 		if (skipped)
@@ -1395,6 +1400,7 @@ void CUDART_CB gmm_kernel_callback(
 {
 	struct kcb *pcb = (struct kcb *)data;
 	int i;
+	GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
 	for (i = 0; i < pcb->nrgns; i++)
 		region_unpin(pcb->rgns[i]);
 	free(pcb);

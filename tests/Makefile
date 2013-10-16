@@ -1,16 +1,16 @@
 # EDIT ME: Test cases
-TESTS = test_init_fini test_malloc test_memcpy
+TESTS = test_init_fini test_malloc test_memcpy test_launch
 
 # Paths
 CUDAPATH = /usr/local/cuda
-GMMPATH = ../src
+GMMPATH := `pwd`/../src
 TMPPATH = ./tmp
 
 # Compiler/linker settings
 NVCC := $(CUDAPATH)/bin/nvcc
 CFLAGS := -c --compiler-options -Wall -arch=sm_20 \
 	-I$(CUDAPATH)/include -I$(GMMPATH)
-LDFLAGS := -L$(CUDAPATH)/lib64
+LDFLAGS := -L$(CUDAPATH)/lib64 -L$(GMMPATH) -Xlinker -rpath=$(GMMPATH) -lgmm
 
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
