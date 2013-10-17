@@ -384,7 +384,6 @@ cudaError_t gmm_cudaSetupArgument(
 	}
 
 	if (is_dptr) {
-		kargs[nargs].is_dptr = 1;
 		kargs[nargs].arg.arg1.r = r;
 		kargs[nargs].arg.arg1.off =
 				(unsigned long)(*(void **)arg - r->swp_addr);
@@ -392,17 +391,16 @@ cudaError_t gmm_cudaSetupArgument(
 			kargs[nargs].arg.arg1.flags = rwflags[i];
 		else
 			kargs[nargs].arg.arg1.flags = HINT_DEFAULT;
-		kargs[nargs].arg.arg1.argoff = offset;
 	}
 	else {
 		// This argument is not a device memory pointer.
 		// XXX: Currently we ignore the case that nv_cudaSetupArgument
 		// returns error and CUDA runtime might stop pushing arguments.
-		kargs[nargs].is_dptr = 0;
-		kargs[nargs].arg.arg2.arg = arg;
-		kargs[nargs].arg.arg2.size = size;
-		kargs[nargs].arg.arg2.offset = offset;
+		kargs[nargs].arg.arg2.arg = (void *)arg;
 	}
+	kargs[nargs].is_dptr = is_dptr;
+	kargs[nargs].size = size;
+	kargs[nargs].argoff = offset;
 
 	nargs++;
 	return cudaSuccess;
@@ -523,7 +521,7 @@ reload:
 			kargs[i].arg.arg1.dptr =
 					kargs[i].arg.arg1.r->dev_addr + kargs[i].arg.arg1.off;
 			nv_cudaSetupArgument(&kargs[i].arg.arg1.dptr, sizeof(void *),
-					kargs[i].arg.arg1.argoff);
+					kargs[i].argoff);
 			/*GMM_DPRINT("setup %p %lu %lu\n", \
 					&kargs[i].arg.arg1.dptr, \
 					sizeof(void *), \
@@ -531,7 +529,7 @@ reload:
 		}
 		else {
 			nv_cudaSetupArgument(kargs[i].arg.arg2.arg,
-					kargs[i].arg.arg2.size, kargs[i].arg.arg2.offset);
+					kargs[i].size, kargs[i].argoff);
 			/*GMM_DPRINT("setup %p %lu %lu\n", \
 					kargs[i].arg.arg2.arg, \
 					kargs[i].arg.arg2.size, \

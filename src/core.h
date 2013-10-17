@@ -63,14 +63,11 @@ struct dptr_arg {
 	unsigned long off;		// device pointer offset in the region
 	int flags;
 	void *dptr;				// the actual device memory address
-	unsigned long argoff;	// this argument's offset in the argument stack
 };
 
 // A kernel argument that is not a device memory pointer
 struct ndptr_arg {
 	void *arg;
-	size_t size;
-	size_t offset;
 };
 
 // A kernel argument
@@ -80,6 +77,8 @@ struct karg {
 		struct dptr_arg arg1;
 		struct ndptr_arg arg2;
 	} arg;
+	size_t size;
+	size_t argoff;
 };
 
 // Kernel callback structure
