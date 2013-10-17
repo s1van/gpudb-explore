@@ -296,7 +296,7 @@ cudaError_t cudaReference(int which_arg, int flags)
 {
 	int i;
 
-	GMM_DPRINT("cudaReference: %d %d\n", which_arg, flags);
+	//GMM_DPRINT("cudaReference: %d %d\n", which_arg, flags);
 
 	if (!initialized)
 		return cudaErrorInitializationError;

@@ -318,7 +318,7 @@ cudaError_t gmm_cudaConfigureCall(
 		size_t sharedMem,
 		cudaStream_t stream)
 {
-	GMM_DPRINT("gmm_cudaConfigureCall: %d %d\n", gridDim.x, blockDim.x);
+	//GMM_DPRINT("gmm_cudaConfigureCall: %d %d\n", gridDim.x, blockDim.x);
 	stream_issue = pcontext->stream_kernel;
 	return nv_cudaConfigureCall(gridDim, blockDim, sharedMem, stream_issue);
 }
@@ -329,30 +329,30 @@ extern int refs[NREFS];
 extern int rwflags[NREFS];
 extern int nrefs;
 
-// The device pointer arguments in the following kernel to be launched.
+// The arguments for the following kernel to be launched.
 // TODO: should prepare the following structures for each stream.
-static struct dptr_arg dargs[NREFS];
+static struct karg kargs[NREFS];
 static int nargs = 0;
-static int iarg = 0;
 
 // CUDA pushes kernel arguments from left to right. For example, for a kernel
 //				k(a, b, c)
 // , a will be pushed on top of the stack, followed by b, and finally c.
 // %offset gives the actual offset of an argument in the call stack,
 // rather than which argument is being pushed.
-// Let's assume cudaSetupArgument is invoked following the sequence of
-// arguments from left to right.
+// Let's assume %arg is still there when we pushing the arguments after
+// postponing argument setup until cudaLaunch is called. If the CUDA runtime
+// frees the temporary argument array before cudaLaunch, this will cause
+// segmentation fault.
 cudaError_t gmm_cudaSetupArgument(
 		const void *arg,
 		size_t size,
 		size_t offset)
 {
 	struct region *r;
-	cudaError_t ret;
 	int is_dptr = 0;
 	int i = 0;
 
-	GMM_DPRINT("gmm_cudaSetupArgument: %lu %lu %d\n", size, offset, nrefs);
+	//GMM_DPRINT("gmm_cudaSetupArgument: %p %lu %lu\n", arg, size, offset);
 
 	// Test whether this argument is a device memory pointer.
 	// If it is, record it and postpone its pushing until cudaLaunch.
@@ -364,7 +364,7 @@ cudaError_t gmm_cudaSetupArgument(
 	// if no reference hints are given.
 	if (nrefs > 0) {
 		for (i = 0; i < nrefs; i++) {
-			if (refs[i] == iarg)
+			if (refs[i] == nargs)
 				break;
 		}
 		if (i < nrefs) {
@@ -384,23 +384,28 @@ cudaError_t gmm_cudaSetupArgument(
 	}
 
 	if (is_dptr) {
-		dargs[nargs].r = r;
-		dargs[nargs].off = (unsigned long)(*(void **)arg - r->swp_addr);
+		kargs[nargs].is_dptr = 1;
+		kargs[nargs].arg.arg1.r = r;
+		kargs[nargs].arg.arg1.off =
+				(unsigned long)(*(void **)arg - r->swp_addr);
 		if (nrefs > 0)
-			dargs[nargs].flags = rwflags[i];
+			kargs[nargs].arg.arg1.flags = rwflags[i];
 		else
-			dargs[nargs].flags = HINT_DEFAULT;
-		dargs[nargs++].argoff = offset;
-		ret = cudaSuccess;
+			kargs[nargs].arg.arg1.flags = HINT_DEFAULT;
+		kargs[nargs].arg.arg1.argoff = offset;
 	}
-	else
+	else {
 		// This argument is not a device memory pointer.
 		// XXX: Currently we ignore the case that nv_cudaSetupArgument
 		// returns error and CUDA runtime might stop pushing arguments.
-		ret = nv_cudaSetupArgument(arg, size, offset);
+		kargs[nargs].is_dptr = 0;
+		kargs[nargs].arg.arg2.arg = arg;
+		kargs[nargs].arg.arg2.size = size;
+		kargs[nargs].arg.arg2.offset = offset;
+	}
 
-	iarg++;
-	return ret;
+	nargs++;
+	return cudaSuccess;
 }
 
 // XXX: we should assume all memory regions are to be
@@ -425,13 +430,16 @@ static long regions_referenced(struct region ***prgns, int *pnrgns)
 	}
 
 	for (i = 0; i < nargs; i++) {
-		if (!is_included((void **)rgns, nrgns, (void*)(dargs[i].r))) {
-			rgns[nrgns++] = dargs[i].r;
-			dargs[i].r->rwhint.flags = dargs[i].flags;
-			total += dargs[i].r->size;
+		if (kargs[i].is_dptr) {
+			if (!is_included((void **)rgns, nrgns,
+					(void*)(kargs[i].arg.arg1.r))) {
+				rgns[nrgns++] = kargs[i].arg.arg1.r;
+				kargs[i].arg.arg1.r->rwhint.flags = kargs[i].arg.arg1.flags;
+				total += kargs[i].arg.arg1.r->size;
+			}
+			else
+				kargs[i].arg.arg1.r->rwhint.flags |= kargs[i].arg.arg1.flags;
 		}
-		else
-			dargs[i].r->rwhint.flags |= dargs[i].flags;
 	}
 
 	*pnrgns = nrgns;
@@ -473,7 +481,7 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 	long total = 0;
 	int i, ldret;
 
-	GMM_DPRINT("gmm_cudaLaunch called\n");
+	//GMM_DPRINT("gmm_cudaLaunch called\n");
 
 	// NOTE: it is possible nrgns == 0 when regions_referenced
 	// returns. Consider a kernel that only uses registers, for
@@ -509,10 +517,26 @@ reload:
 		}
 	}
 
-	// Push all device pointer arguments.
+	// Push all kernel arguments.
 	for (i = 0; i < nargs; i++) {
-		dargs[i].dptr = dargs[i].r->dev_addr + dargs[i].off;
-		nv_cudaSetupArgument(&dargs[i].dptr, sizeof(void *), dargs[i].argoff);
+		if (kargs[i].is_dptr) {
+			kargs[i].arg.arg1.dptr =
+					kargs[i].arg.arg1.r->dev_addr + kargs[i].arg.arg1.off;
+			nv_cudaSetupArgument(&kargs[i].arg.arg1.dptr, sizeof(void *),
+					kargs[i].arg.arg1.argoff);
+			/*GMM_DPRINT("setup %p %lu %lu\n", \
+					&kargs[i].arg.arg1.dptr, \
+					sizeof(void *), \
+					kargs[i].arg.arg1.argoff);*/
+		}
+		else {
+			nv_cudaSetupArgument(kargs[i].arg.arg2.arg,
+					kargs[i].arg.arg2.size, kargs[i].arg.arg2.offset);
+			/*GMM_DPRINT("setup %p %lu %lu\n", \
+					kargs[i].arg.arg2.arg, \
+					kargs[i].arg.arg2.size, \
+					kargs[i].arg.arg2.offset);*/
+		}
 	}
 
 	// Now we can launch the kernel.
@@ -527,7 +551,6 @@ finish:
 		free(rgns);
 	nrefs = 0;
 	nargs = 0;
-	iarg = 0;
 	return ret;
 }
 
@@ -1400,7 +1423,7 @@ void CUDART_CB gmm_kernel_callback(
 {
 	struct kcb *pcb = (struct kcb *)data;
 	int i;
-	GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
+	//GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
 	for (i = 0; i < pcb->nrgns; i++)
 		region_unpin(pcb->rgns[i]);
 	free(pcb);
