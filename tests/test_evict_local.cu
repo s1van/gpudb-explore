@@ -47,12 +47,13 @@ int test_evict_local()
 		ret = -1;
 		goto finish;
 	}
+	GMM_TPRINT("cudaMemcpyHostToDevice succeeded\n");
 	if (cudaMemcpy(dptr2, ptr, size, cudaMemcpyHostToDevice) != cudaSuccess) {
 		GMM_TPRINT("cudaMemcpyHostToDevice to deptr2 failed\n");
 		ret = -1;
 		goto finish;
 	}
-	GMM_TPRINT("all cudaMemcpyHostToDevice succeeded\n");
+	GMM_TPRINT("cudaMemcpyHostToDevice succeeded\n");
 
 	if (cudaReference(0, HINT_DEFAULT) != cudaSuccess) {
 		GMM_TPRINT("cudaReference failed\n");
