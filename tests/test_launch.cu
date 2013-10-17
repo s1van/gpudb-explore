@@ -8,16 +8,16 @@
 
 __global__ void kernel_inc(int *data, int count)
 {
-    int tot_threads = gridDim.x * blockDim.x;
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
+	int tot_threads = gridDim.x * blockDim.x;
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
 
-    for (; i < count; i += tot_threads)
-    	data[i] = 1;
+	for (; i < count; i += tot_threads)
+		data[i]++;
 }
 
 int test_launch()
 {
-	int *dptr = NULL, *ptr = NULL;
+	int *dptr = NULL, *ptr = NULL, *ptr2 = NULL;
 	int count = 1024 * 1024 * 10;
 	size_t size = sizeof(int) * count;
 	int i, ret = 0;
@@ -27,7 +27,14 @@ int test_launch()
 		GMM_TPRINT("malloc failed for ptr\n");
 		return -1;
 	}
-	memset(ptr, 0, size);
+	ptr2 = (int *)malloc(size);
+	if (!ptr2) {
+		GMM_TPRINT("malloc failed for ptr\n");
+		free(ptr);
+		return -1;
+	}
+	for(i = 0; i < count; i++)
+		ptr[i] = 1;
 
 	if (cudaMalloc(&dptr, size) != cudaSuccess) {
 		GMM_TPRINT("cudaMalloc failed\n");
@@ -55,8 +62,10 @@ int test_launch()
 		ret = -1;
 		goto finish;
 	}
+	else
+		GMM_TPRINT("kernel finished\n");
 
-	if (cudaMemcpy(ptr, dptr, size, cudaMemcpyDeviceToHost) != cudaSuccess) {
+	if (cudaMemcpy(ptr2, dptr, size, cudaMemcpyDeviceToHost) != cudaSuccess) {
 		GMM_TPRINT("cudaMemcpy DtoH failed\n");
 		ret = -1;
 		goto finish;
@@ -64,7 +73,7 @@ int test_launch()
 	GMM_TPRINT("cudaMemcpyDeviceToHost succeeded\n");
 
 	for(i = 0; i < count; i++)
-		if (ptr[i] != 1) {
+		if (ptr2[i] != 2) {
 			GMM_TPRINT("verification failed at ptr[%d]==%d\n", i, ptr[i]);
 			ret = -1;
 			goto finish;
@@ -76,6 +85,7 @@ finish:
 		GMM_TPRINT("cudaFree failed\n");
 	}
 	free(ptr);
+	free(ptr2);
 
 	return ret;
 }
