@@ -32,8 +32,6 @@ extern cudaError_t (*nv_cudaLaunch)(const void *);
 extern cudaError_t (*nv_cudaStreamAddCallback)(cudaStream_t,
 		cudaStreamCallback_t, void*, unsigned int);
 
-// TODO: declare all internal functions here, otherwise gcc
-// might export those symbols.
 static int gmm_free(struct region *m);
 static int gmm_htod(
 		struct region *r,
