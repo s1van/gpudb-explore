@@ -39,7 +39,7 @@ static inline void acquire(struct spinlock *lk)
 
 // Try to acquire the lock.
 // Return 1 if the locking was successful.
-#define TRY_ACQUIRE_TIMES		5
+#define TRY_ACQUIRE_TIMES		1
 static inline int try_acquire(struct spinlock *lk)
 {
 	int i = 0;

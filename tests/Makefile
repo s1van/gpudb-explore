@@ -1,5 +1,5 @@
 # EDIT ME: Test cases
-TESTS = test_init_fini test_malloc test_memcpy test_launch
+TESTS = test_spinlock test_init_fini test_malloc test_memcpy test_launch
 
 # Paths
 CUDAPATH = /usr/local/cuda
@@ -43,11 +43,11 @@ $(TESTS) : $(TMPPATH)/$$@
 test : setup $(TESTS) cleanup
 
 setup:
-	@$(GMMPATH)/gmmctl --start
+	@$(GMMPATH)/gmmctl --start -v
 	@echo ""
 
 cleanup:
-	@$(GMMPATH)/gmmctl --stop
+	@$(GMMPATH)/gmmctl --stop -v
 
 clean:
 	-@rm $(TESTBINS) $(TMPPATH)/*.o testcases.h

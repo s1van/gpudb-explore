@@ -83,8 +83,9 @@ void gmm_init(void)
 	// implicitly required by CUDA runtime be allocated now. Those
 	// regions should be always attached and not managed by GMM runtime.
 	do {
-		size_t dummy;
-		nv_cudaMemGetInfo(&dummy, &dummy);
+		size_t dummy1, dummy2;
+		nv_cudaMemGetInfo(&dummy1, &dummy2);
+		//GMM_DPRINT("free: %lu, total: %lu\n", dummy1, dummy2);
 	} while (0);
 
 	initialized = 1;

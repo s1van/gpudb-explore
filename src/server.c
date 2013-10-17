@@ -13,6 +13,8 @@
 
 #include "protocol.h"
 
+int verbose = 0;
+
 int start(size_t mem_total)
 {
 	struct gmm_global *pglobal;
@@ -28,14 +30,18 @@ int start(size_t mem_total)
 		exit(-1);
 	}
 
-	fprintf(stderr, "Total GPU memory: %lu bytes.\n", total);
-	fprintf(stderr, "Free GPU memory: %lu bytes.\n", free);
+	if (verbose) {
+		fprintf(stderr, "Total GPU memory: %lu bytes.\n", total);
+		fprintf(stderr, "Free GPU memory: %lu bytes.\n", free);
+	}
 	if (mem_total > 0 && mem_total <= total)
 		total = mem_total;
 	else
 		total -= 200000000;		// FIXME
-	fprintf(stderr, "Use GPU memory: %lu bytes.\n", total);
-	fprintf(stderr, "Setting GMM ...\n");
+	if (verbose) {
+		fprintf(stderr, "Use GPU memory: %lu bytes.\n", total);
+		fprintf(stderr, "Setting GMM ...\n");
+	}
 
 	// Create the semaphore for syncing kernel launches.
 	sem = sem_open(GMM_SEM_LAUNCH, O_CREAT | O_EXCL, 0666, 1);
@@ -106,7 +112,8 @@ int start(size_t mem_total)
 	munmap(pglobal, sizeof(*pglobal));
 	close(shmfd);
 
-	fprintf(stderr, "Setting done!\nGMM started.\n");
+	if (verbose)
+		fprintf(stderr, "Setting done!\nGMM started.\n");
 	return 0;
 
 fail_mmap:
@@ -129,7 +136,8 @@ int stop()
 		perror("Failed to unlink semaphore");
 	}
 
-	printf("GMM stopped\n");
+	if (verbose)
+		printf("GMM stopped\n");
 	return 0;
 }
 
@@ -139,15 +147,58 @@ int restart(size_t mem_total)
 	return start(mem_total);
 }
 
+// Print GMM status
+int info()
+{
+	struct gmm_global *pglobal;
+	int shmfd, iclient;
+
+	shmfd = shm_open(GMM_SHM_GLOBAL, O_RDWR, 0);
+	if (shmfd == -1) {
+		fprintf(stderr, "GMM not started: %s\n", strerror(errno));
+		return -1;
+	}
+
+	pglobal = (struct gmm_global *)mmap(NULL, sizeof(*pglobal),
+			PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
+	if (pglobal == MAP_FAILED) {
+		fprintf(stderr, "Cannot map GMM shared memory: %s\n", strerror(errno));
+		close(shmfd);
+		return -1;
+	}
+	close(shmfd);
+
+	fprintf(stderr, "GMM status:\n");
+	fprintf(stderr, "\tmem_total:\t\t%ld\n", pglobal->mem_total);
+	fprintf(stderr, "\tmem_used:\t\t%ld\n", pglobal->mem_used);
+	fprintf(stderr, "\tclients in mru order:");
+
+	acquire(&pglobal->lock);
+	if (pglobal->imru == -1)
+		fprintf(stderr, "\t[None]\n");
+	else
+		fprintf(stderr, "\n");
+	for (iclient = pglobal->imru; iclient != -1;
+			iclient = pglobal->clients[iclient].inext) {
+		struct gmm_client *client = &pglobal->clients[iclient];
+		fprintf(stderr, "\t\tpid: \t\t%d\n", client->pid);
+		fprintf(stderr, "\t\tpinned:\t\t%d\n", client->pinned);
+		fprintf(stderr, "\t\tdetachable:\t%ld\n\n", client->size_detachable);
+	}
+	release(&pglobal->lock);
+
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
-	struct option options[5];
-	char *opts = "serm:";
+	struct option options[7];
+	char *opts = "serm:vi";
 	int command = '\0';
 	long mem_total = 0;
 	int c, ret = 0;
 
-	memset(options, 0, sizeof(options[0]) * 5);
+	memset(options, 0, sizeof(options[0]) * 7);
 	options[0].name = "start";
 	options[0].val = 's';
 	options[1].name = "stop";
@@ -157,6 +208,10 @@ int main(int argc, char *argv[])
 	options[3].name = "mem-size";
 	options[3].val = 'm';
 	options[3].has_arg = 1;
+	options[4].name = "verbose";
+	options[4].val = 'v';
+	options[4].name = "info";
+	options[4].val = 'i';
 
 	while ((c = getopt_long(argc, argv, opts, options, NULL)) != -1) {
 		switch (c) {
@@ -169,8 +224,14 @@ int main(int argc, char *argv[])
 		case 'r':
 			command = 'r';
 			break;
+		case 'i':
+			command = 'i';
+			break;
 		case 'm':
 			mem_total = atol(optarg);
+			break;
+		case 'v':
+			verbose = 1;
 			break;
 		case '?':
 			if (optopt == 'm')
@@ -191,6 +252,8 @@ int main(int argc, char *argv[])
 		ret = stop();
 	else if (command == 'r')
 		ret =restart(mem_total);
+	else if (command == 'i')
+		ret = info();
 	else {
 		fprintf(stderr, "No action specified\n");
 		ret = -1;
