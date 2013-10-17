@@ -18,7 +18,7 @@ __global__ void kernel_inc(int *data, int count)
 int test_launch()
 {
 	int *dptr = NULL, *ptr = NULL, *ptr2 = NULL;
-	int count = 1024 * 1024 * 10;
+	int count = 1000 * 1000 * 200;
 	size_t size = sizeof(int) * count;
 	int i, ret = 0;
 
@@ -33,8 +33,7 @@ int test_launch()
 		free(ptr);
 		return -1;
 	}
-	for(i = 0; i < count; i++)
-		ptr[i] = 1;
+	memset(ptr, 0, size);
 
 	if (cudaMalloc(&dptr, size) != cudaSuccess) {
 		GMM_TPRINT("cudaMalloc failed\n");
@@ -73,7 +72,7 @@ int test_launch()
 	GMM_TPRINT("cudaMemcpyDeviceToHost succeeded\n");
 
 	for(i = 0; i < count; i++)
-		if (ptr2[i] != 2) {
+		if (ptr2[i] != 1) {
 			GMM_TPRINT("verification failed at ptr[%d]==%d\n", i, ptr[i]);
 			ret = -1;
 			goto finish;
