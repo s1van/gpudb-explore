@@ -228,6 +228,9 @@ cudaError_t gmm_cudaFree(void *devPtr)
 		return cudaSuccess;
 }
 
+// TODO: htod and dtoh operations have to consider whether the region is
+// being accessed by a kernel. For example, if the region is being modified
+// by a kernel, it is not correct to read a block that is being modified.
 cudaError_t gmm_cudaMemcpyHtoD(
 		void *dst,
 		const void *src,
