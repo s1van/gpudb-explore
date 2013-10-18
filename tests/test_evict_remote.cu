@@ -1,4 +1,4 @@
-// remote evictions
+// remote evictions (you have to run this manually instead of make test*)
 #include <stdio.h>
 #include <stdlib.h>
 #include <cuda.h>
