@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+void gmm_print_region(const void *rgn);
 void gmm_print_dptr(const void *dptr);
 
 #ifdef __cplusplus

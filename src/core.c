@@ -10,6 +10,7 @@
 #include "hint.h"
 #include "replacement.h"
 #include "msq.h"
+#include "debug.h"
 
 
 // CUDA function handlers, defined in gmm_interfaces.c
@@ -1094,6 +1095,8 @@ int victim_select(
 {
 	int ret = 0;
 
+	//GMM_DPRINT("selecting victim: size(%ld) local(%d)\n", size_needed, local_only);
+
 #if defined(GMM_REPLACEMENT_LRU)
 	ret = victim_select_lru(size_needed, excls, nexcl, local_only, victims);
 #elif defined(GMM_REPLACEMENT_LFU)
@@ -1115,6 +1118,9 @@ int region_evict(struct region *r)
 	int nblocks = NRBLOCKS(r->size);
 	char *skipped;
 	int i;
+
+	//GMM_DPRINT("evicting region %p\n", r);
+	//gmm_print_region(r);
 
 	if (!r->dev_addr)
 		panic("dev_addr is null");
@@ -1171,6 +1177,7 @@ finish:
 	r->state = STATE_DETACHED;
 	release(&r->lock);
 
+	//GMM_DPRINT("evicted region %p\n", r);
 	free(skipped);
 	return 0;
 }
@@ -1180,7 +1187,9 @@ finish:
 int remote_victim_evict(int client, long size_needed)
 {
 	int ret;
+	//GMM_DPRINT("evicting remote victim in client %d\n", client);
 	ret = msq_send_req_evict(client, size_needed, 1);
+	//GMM_DPRINT("remote victim eviction returned: %d\n", ret);
 	client_unpin(client);
 	return ret;
 }
@@ -1193,6 +1202,8 @@ int local_victim_evict(long size_needed)
 	struct victim *v;
 	struct region *r;
 	int ret;
+
+	INIT_LIST_HEAD(&victims);
 
 	ret = victim_select(size_needed, NULL, 0, 1, &victims);
 	if (ret != 0)
@@ -1212,6 +1223,8 @@ int local_victim_evict(long size_needed)
 // may own some evictable region.
 int victim_evict(struct victim *victim, long size_needed)
 {
+	//GMM_DPRINT("evicting victim r(%p) client(%d)\n", victim->r, victim->client);
+
 	if (victim->r)
 		return region_evict(victim->r);
 	else if (victim->client != -1)
@@ -1231,6 +1244,7 @@ static int gmm_evict(long size_needed, struct region **excls, int nexcl)
 	struct victim *v;
 	int ret = 0;
 
+	//GMM_DPRINT("evicting for %ld bytes\n", size_needed);
 	INIT_LIST_HEAD(&victims);
 
 	do {
@@ -1288,6 +1302,8 @@ static int region_attach(
 {
 	int ret;
 
+	//GMM_DPRINT("attaching region %p\n", r);
+
 	if (r->state != STATE_DETACHED) {
 		GMM_DPRINT("nothing to attach\n");
 		return -1;
@@ -1333,6 +1349,9 @@ static int region_load(
 		int nexcl)
 {
 	int i, ret;
+
+	//GMM_DPRINT("loading region %p\n", r);
+	//gmm_print_region(r);
 
 	if (r->state == STATE_EVICTING || r->state == STATE_FREEING) {
 		GMM_DPRINT("should not see a evicting/freeing region during loading\n");

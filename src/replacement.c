@@ -21,6 +21,8 @@ int victim_select_lru_local(
 	struct victim *v;
 	struct region *r;
 
+	//GMM_DPRINT("victim_select_lru_local: size(%ld) victims(%p) prev(%p) next(%p)\n", size_needed, victims, victims->prev, victims->next);
+
 	v = (struct victim *)malloc(sizeof(*v));
 	if (!v) {
 		GMM_DPRINT("malloc failed for a new victim: %s\n", strerror(errno));
@@ -47,9 +49,11 @@ int victim_select_lru_local(
 	release(&pcontext->lock_attached);
 
 	if (pos == &pcontext->list_attached) {
+		//GMM_DPRINT("no victim selected\n");
 		free(v);
 		return 1;	// XXX: this can be problematic
 	}
+	//GMM_DPRINT("victim selected\n");
 
 	return 0;
 }

@@ -23,6 +23,7 @@ int msq_send(int client, const struct msg *msg)
 	char qname[32];
 	mqd_t qid;
 
+	//GMM_DPRINT("msq_send: client(%d) type(%d) size(%d)\n", client, msg->type, msg->size);
 	sprintf(qname, "/gmm_cli_%d", cidtopid(client));
 	qid = mq_open(qname, O_WRONLY);
 	if (qid == (mqd_t) -1) {
@@ -36,6 +37,7 @@ int msq_send(int client, const struct msg *msg)
 		mq_close(qid);
 		return -1;
 	}
+	//GMM_DPRINT("msq_send: message sent\n");
 
 	mq_close(qid);
 	return 0;
@@ -87,6 +89,7 @@ void handle_req_evict(struct msg_req *msg)
 {
 	int ret;
 
+	//GMM_DPRINT("handle_req_evict: from(%d) size(%d) block(%d)\n", msg->from, msg->size, msg->block);
 	if (msg->size != sizeof(*msg)) {
 		GMM_DPRINT("message size unmatches size of msg_req\n");
 		return;
@@ -99,10 +102,12 @@ void handle_req_evict(struct msg_req *msg)
 	ret = local_victim_evict(msg->size_needed);
 	if (msg->block)
 		msq_send_rep_ack(msg->from, ret);
+	//GMM_DPRINT("handle_req_evict: handled\n");
 }
 
 void handle_rep_ack(struct msg_rep *msg)
 {
+	//GMM_DPRINT("handle_rep_ack: from(%d) ret(%d)\n", msg->from, msg->ret);
 	if (msg->size != sizeof(*msg)) {
 		GMM_DPRINT("message size unmatches size of msg_rep\n");
 		return;
@@ -115,7 +120,8 @@ void handle_rep_ack(struct msg_rep *msg)
 	pthread_mutex_lock(&mutx_ack);
 	ack = msg->ret;
 	pthread_cond_signal(&cond_ack);
-	pthread_mutex_lock(&mutx_ack);
+	pthread_mutex_unlock(&mutx_ack);
+	//GMM_DPRINT("handle_rep_ack: handled\n");
 }
 
 // The thread that receives and handles messages from peer clients.

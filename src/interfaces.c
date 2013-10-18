@@ -13,7 +13,6 @@
 #include "protocol.h"
 #include "interfaces.h"
 #include "hint.h"
-#include "debug.h"
 
 
 // Default CUDA runtime function handlers.

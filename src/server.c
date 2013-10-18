@@ -19,11 +19,11 @@ int start(size_t mem_total)
 {
 	struct gmm_global *pglobal;
 	cudaError_t ret;
-	size_t free, total;
+	size_t sfree, total;
 	sem_t *sem;
 	int i, shmfd;
 
-	ret = cudaMemGetInfo(&free, &total);
+	ret = cudaMemGetInfo(&sfree, &total);
 	if (ret != cudaSuccess) {
 		fprintf(stderr, "Failed to get CUDA device memory info: %s\n",
 				cudaGetErrorString(ret));
@@ -32,7 +32,7 @@ int start(size_t mem_total)
 
 	if (verbose) {
 		fprintf(stderr, "Total GPU memory: %lu bytes.\n", total);
-		fprintf(stderr, "Free GPU memory: %lu bytes.\n", free);
+		fprintf(stderr, "Free GPU memory: %lu bytes.\n", sfree);
 	}
 	if (mem_total > 0 && mem_total <= total)
 		total = mem_total;
