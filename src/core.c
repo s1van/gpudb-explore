@@ -659,6 +659,12 @@ static void block_sync(struct region *r, int block)
 	if (!r->dev_addr || !r->swp_addr)
 		panic("block_sync");
 
+	// Have to wait until the kernel modifying the region finishes,
+	// otherwise it is possible that the data we read are inconsistent
+	// with what's being written by the kernel.
+	// TODO: will make the modifying flags more fine-grained (block level).
+	while (atomic_read(&r->modifying) > 0) ;
+
 	off = block * BLOCKSIZE;
 	size = MIN(off + BLOCKSIZE, r->size) - off;
 	if (dvalid && !svalid) {
@@ -793,7 +799,7 @@ static void gmm_htod_block(
 			if (b->dev_valid)
 				b->dev_valid = 0;
 		}
-		else {
+		else { // dev_valid == 1 && swp_valid == 0
 			if (partial) {
 				// XXX: We don't need to pin the device memory because we are
 				// holding the lock of a swp_valid=0,dev_valid=1 block, which
@@ -994,7 +1000,7 @@ static int gmm_dtoh_block(
 			*skipped = 1;
 		return 0;
 	}
-	else {
+	else { // dev_valid == 1 && swp_valid == 0
 		// We don't need to pin the device memory because we are holding the
 		// lock of a swp_valid=0,dev_valid=1 block, which will prevent the
 		// evictor, if any, from freeing the device memory under us.
@@ -1442,8 +1448,11 @@ void CUDART_CB gmm_kernel_callback(
 	struct kcb *pcb = (struct kcb *)data;
 	int i;
 	//GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
-	for (i = 0; i < pcb->nrgns; i++)
+	for (i = 0; i < pcb->nrgns; i++) {
+		if (pcb->mod[i])
+			atomic_dec(&pcb->rgns[i]->modifying);
 		region_unpin(pcb->rgns[i]);
+	}
 	free(pcb);
 }
 
@@ -1452,6 +1461,7 @@ void CUDART_CB gmm_kernel_callback(
 static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 {
 	struct kcb *pcb;
+	int i;
 
 	if (nrgns > NREFS) {
 		GMM_DPRINT("too many regions\n");
@@ -1465,9 +1475,21 @@ static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 	}
 	if (nrgns > 0)
 		memcpy(&pcb->rgns, rgns, sizeof(void *) * nrgns);
+	for (i = 0; i < nrgns; i++) {
+		if (rgns[i]->rwhint.flags & HINT_WRITE) {
+			pcb->mod[i] = 1;
+			atomic_inc(&rgns[i]->modifying);
+		}
+		else
+			pcb->mod[i] = 0;
+	}
 	pcb->nrgns = nrgns;
 
 	if (nv_cudaLaunch(entry) != cudaSuccess) {
+		for (i = 0; i < nrgns; i++) {
+			if (pcb->mod[i])
+				atomic_dec(&pcb->rgns[i]->modifying);
+		}
 		free(pcb);
 		return -1;
 	}
