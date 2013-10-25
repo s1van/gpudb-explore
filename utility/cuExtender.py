@@ -59,7 +59,7 @@ def main():
 					ref = refs[pattern]
 					print spaces + 'do{'
 					for pos in ref.keys():
-						print spaces + '\t' + "cudaReference(" + pos + ", " + ref[pos] + ");"
+						print spaces + '\t' + "GMM_CALL(cudaReference(" + pos + ", " + ref[pos] + "));"
 					print '\t' + line.strip('\n')
 					print spaces + '} while(0);'
 			if (not patternFound):
