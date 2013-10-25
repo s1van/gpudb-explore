@@ -53,7 +53,7 @@ def main():
 		if (re.search('\<\<\<', line) != None):	#must be a kernel call
 			patternFound = False
 			for pattern in refs.keys():
-				if (re.search('[ \t]' + pattern + '\<\<\<', line) != None):
+				if (re.search('[ |\t]' + pattern + '\<', line) != None):
 					spaces = line[0:(len(line)-len(line.lstrip()))]
 					patternFound = True
 					ref = refs[pattern]
