@@ -1,7 +1,7 @@
 #ifndef _GMM_INTERFACES_H_
 #define _GMM_INTERFACES_H_
 
-#define _GNU_SOURCE		// __USE_GNU
+#define __USE_GNU		// _GNU_SOURCE
 #include <dlfcn.h>		/* header required for dlopen() and dlsym() */
 #include <stdio.h>
 #include <stdlib.h>

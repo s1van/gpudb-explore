@@ -6,6 +6,9 @@ ENABLE_PROFILE = 1
 
 GMM_CONFIGS :=
 
+# Enable RW hint
+#GMM_CONFIGS += -DGMM_RW
+
 # Copy on write
 GMM_CONFIGS += -DGMM_CONFIG_COW
 

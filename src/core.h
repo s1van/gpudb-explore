@@ -184,6 +184,10 @@ cudaError_t gmm_cudaMemcpyDtoH(
 		void *dst,
 		const void *src,
 		size_t count);
+cudaError_t gmm_cudaMemcpyDtoD(
+		void *dst,
+		const void *src,
+		size_t count);
 cudaError_t gmm_cudaMemGetInfo(size_t *free, size_t *total);
 cudaError_t gmm_cudaConfigureCall(
 		dim3 gridDim,

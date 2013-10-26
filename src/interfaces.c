@@ -50,21 +50,21 @@ static int initialized = 0;
 __attribute__((constructor))
 void gmm_init(void)
 {
-	INTERCEPT_CUDA2("cudaMalloc", nv_cudaMalloc);
-	INTERCEPT_CUDA2("cudaFree", nv_cudaFree);
-	INTERCEPT_CUDA2("cudaMemcpy", nv_cudaMemcpy);
-	INTERCEPT_CUDA2("cudaMemcpyAsync", nv_cudaMemcpyAsync);
-	INTERCEPT_CUDA2("cudaStreamCreate", nv_cudaStreamCreate);
-	INTERCEPT_CUDA2("cudaStreamDestroy", nv_cudaStreamDestroy);
-	INTERCEPT_CUDA2("cudaStreamSynchronize", nv_cudaStreamSynchronize);
-	INTERCEPT_CUDA2("cudaMemGetInfo", nv_cudaMemGetInfo);
-	INTERCEPT_CUDA2("cudaSetupArgument", nv_cudaSetupArgument);
-	INTERCEPT_CUDA2("cudaConfigureCall", nv_cudaConfigureCall);
-	INTERCEPT_CUDA2("cudaMemset", nv_cudaMemset);
+	INTERCEPT_CUDA("cudaMalloc", nv_cudaMalloc);
+	INTERCEPT_CUDA("cudaFree", nv_cudaFree);
+	INTERCEPT_CUDA("cudaMemcpy", nv_cudaMemcpy);
+	INTERCEPT_CUDA("cudaMemcpyAsync", nv_cudaMemcpyAsync);
+	INTERCEPT_CUDA("cudaStreamCreate", nv_cudaStreamCreate);
+	INTERCEPT_CUDA("cudaStreamDestroy", nv_cudaStreamDestroy);
+	INTERCEPT_CUDA("cudaStreamSynchronize", nv_cudaStreamSynchronize);
+	INTERCEPT_CUDA("cudaMemGetInfo", nv_cudaMemGetInfo);
+	INTERCEPT_CUDA("cudaSetupArgument", nv_cudaSetupArgument);
+	INTERCEPT_CUDA("cudaConfigureCall", nv_cudaConfigureCall);
+	INTERCEPT_CUDA("cudaMemset", nv_cudaMemset);
 	//INTERCEPT_CUDA2("cudaMemsetAsync", nv_cudaMemsetAsync);
 	//INTERCEPT_CUDA2("cudaDeviceSynchronize", nv_cudaDeviceSynchronize);
-	INTERCEPT_CUDA2("cudaLaunch", nv_cudaLaunch);
-	INTERCEPT_CUDA2("cudaStreamAddCallback", nv_cudaStreamAddCallback);
+	INTERCEPT_CUDA("cudaLaunch", nv_cudaLaunch);
+	INTERCEPT_CUDA("cudaStreamAddCallback", nv_cudaStreamAddCallback);
 
 	if (gmm_context_init() == -1) {
 		GMM_DPRINT("failed to initialize GMM local context\n");
@@ -161,10 +161,8 @@ cudaError_t cudaMemcpy(
 			ret = gmm_cudaMemcpyHtoD(dst, src, count);
 		else if (kind == cudaMemcpyDeviceToHost)
 			ret = gmm_cudaMemcpyDtoH(dst, src, count);
-		else {
-			GMM_DPRINT("unsupported cudaMemcpyKind\n");
-			ret = cudaErrorInvalidValue;
-		}
+		else
+			ret = gmm_cudaMemcpyDtoD(dst, src, count);
 	}
 	else {
 		GMM_DPRINT("warning: cudaMemcpy called outside of GMM\n");
@@ -308,10 +306,17 @@ cudaError_t cudaReference(int which_arg, int flags)
 		}
 		if (i == nrefs) {
 			refs[nrefs] = which_arg;
+#ifdef GMM_CONFIG_RW
 			rwflags[nrefs++] = flags;
+#else
+			rwflags[nrefs++] = HINT_DEFAULT;
+#endif
 		}
-		else
+		else {
+#ifdef GMM_CONFIG_RW
 			rwflags[i] |= flags;
+#endif
+		}
 	}
 	else {
 		GMM_DPRINT("bad cudaReference argument %d (max %d)\n", \

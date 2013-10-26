@@ -44,6 +44,12 @@ static int gmm_dtoh(
 		void *dst,
 		const void *src,
 		size_t count);
+static int gmm_dtod(
+		struct region *rd,
+		struct region *rs,
+		void *dst,
+		const void *src,
+		size_t count);
 static int gmm_memset(struct region *r, void *dst, int value, size_t count);
 static int gmm_load(struct region **rgns, int nrgns);
 static int gmm_launch(const char *entry, struct region **rgns, int nrgns);
@@ -170,9 +176,15 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 	struct region *r;
 	int nblocks;
 
+	//GMM_DPRINT("cudaMalloc begin: %lu\n", size);
+
 	if (size > memsize_total()) {
-		GMM_DPRINT("cudaMalloc size (%lu) too large (max %ld)", \
+		GMM_DPRINT("cudaMalloc size (%lu) too large (max %ld)\n", \
 				size, memsize_total());
+		return cudaErrorInvalidValue;
+	}
+	else if (size <= 0) {
+		GMM_DPRINT("cudaMalloc size (%lu) too small\n", size);
 		return cudaErrorInvalidValue;
 	}
 
@@ -207,6 +219,8 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 	atomic_set(&r->pinned, 0);
 	r->rwhint.flags = HINT_DEFAULT;
 
+	GMM_DPRINT("cudaMalloc: %p %lu\n", r->swp_addr, size);
+
 	list_alloced_add(pcontext, r);
 	*devPtr = r->swp_addr;
 	return cudaSuccess;
@@ -225,6 +239,8 @@ cudaError_t gmm_cudaFree(void *devPtr)
 		return cudaErrorInvalidDevicePointer;
 	}
 
+	GMM_DPRINT("cudaFree: %p\n", r->swp_addr);
+
 	if (gmm_free(r) < 0)
 		return cudaErrorUnknown;
 	else
@@ -241,7 +257,7 @@ cudaError_t gmm_cudaMemcpyHtoD(
 {
 	struct region *r;
 
-//	GMM_DPRINT("gmm_cudaMemcpyHtoD called\n");
+	GMM_DPRINT("gmm_cudaMemcpyHtoD called\n");
 
 	if (count <= 0)
 		return cudaErrorInvalidValue;
@@ -273,7 +289,7 @@ cudaError_t gmm_cudaMemcpyDtoH(
 {
 	struct region *r;
 
-//	GMM_DPRINT("gmm_cudaMemcpyDtoH called\n");
+	GMM_DPRINT("gmm_cudaMemcpyDtoH called\n");
 
 	if (count <= 0)
 		return cudaErrorInvalidValue;
@@ -298,10 +314,57 @@ cudaError_t gmm_cudaMemcpyDtoH(
 	return cudaSuccess;
 }
 
+cudaError_t gmm_cudaMemcpyDtoD(
+		void *dst,
+		const void *src,
+		size_t count)
+{
+	struct region *rs, *rd;
+
+	GMM_DPRINT("gmm_cudaMemcpyDtoD called\n");
+
+	if (count <= 0)
+		return cudaErrorInvalidValue;
+
+	rs = region_lookup(pcontext, src);
+	if (!rs) {
+		GMM_DPRINT("cannot find device memory region containing %p\n", src);
+		return cudaErrorInvalidDevicePointer;
+	}
+	if (rs->state == STATE_FREEING) {
+		GMM_DPRINT("source region already freed\n");
+		return cudaErrorInvalidValue;
+	}
+	if (src + count > rs->swp_addr + rs->size) {
+		GMM_DPRINT("dtod device memory access out of boundary\n");
+		return cudaErrorInvalidValue;
+	}
+
+	rd = region_lookup(pcontext, dst);
+	if (!rd) {
+		GMM_DPRINT("cannot find device memory region containing %p\n", src);
+		return cudaErrorInvalidDevicePointer;
+	}
+	if (rd->state == STATE_FREEING) {
+		GMM_DPRINT("destination region already freed\n");
+		return cudaErrorInvalidValue;
+	}
+	if (dst + count > rd->swp_addr + rd->size) {
+		GMM_DPRINT("dtod device memory access out of boundary\n");
+		return cudaErrorInvalidValue;
+	}
+
+	if (gmm_dtod(rd, rs, dst, src, count) < 0)
+		return cudaErrorUnknown;
+
+	return cudaSuccess;
+}
+
 cudaError_t gmm_cudaMemGetInfo(size_t *free, size_t *total)
 {
 	*free = (size_t)memsize_free();
 	*total = (size_t)memsize_total();
+	GMM_DPRINT("gmm_cudaMemGetInfo: %lu %lu\n", *free, *total);
 	return cudaSuccess;
 }
 
@@ -322,7 +385,7 @@ cudaError_t gmm_cudaConfigureCall(
 		size_t sharedMem,
 		cudaStream_t stream)
 {
-	//GMM_DPRINT("gmm_cudaConfigureCall: %d %d\n", gridDim.x, blockDim.x);
+	GMM_DPRINT("gmm_cudaConfigureCall: %d %d\n", gridDim.x, blockDim.x);
 	stream_issue = pcontext->stream_kernel;
 	return nv_cudaConfigureCall(gridDim, blockDim, sharedMem, stream_issue);
 }
@@ -356,7 +419,7 @@ cudaError_t gmm_cudaSetupArgument(
 	int is_dptr = 0;
 	int i = 0;
 
-	//GMM_DPRINT("gmm_cudaSetupArgument: %p %lu %lu\n", arg, size, offset);
+	GMM_DPRINT("gmm_cudaSetupArgument: %p %lu %lu\n", arg, size, offset);
 
 	// Test whether this argument is a device memory pointer.
 	// If it is, record it and postpone its pushing until cudaLaunch.
@@ -375,9 +438,13 @@ cudaError_t gmm_cudaSetupArgument(
 			if (size != sizeof(void *))
 				panic("cudaSetupArgument does not match cudaReference");
 			r = region_lookup(pcontext, *(void **)arg);
-			if (!r)
+			if (!r) {
 				// TODO: report error more gracefully
-				panic("region_lookup in cudaSetupArgument");
+				GMM_DPRINT("cannot find region containing %p (%d) in " \
+						"gmm_cudaSetupArgument\n", *(void **)arg, nargs);
+				return cudaErrorUnknown;
+				//panic("region_lookup in cudaSetupArgument");
+			}
 			is_dptr = 1;
 		}
 	}
@@ -483,7 +550,7 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 	long total = 0;
 	int i, ldret;
 
-	//GMM_DPRINT("gmm_cudaLaunch called\n");
+	GMM_DPRINT("gmm_cudaLaunch\n");
 
 	// NOTE: it is possible nrgns == 0 when regions_referenced
 	// returns. Consider a kernel that only uses registers, for
@@ -560,7 +627,7 @@ cudaError_t gmm_cudaMemset(void *devPtr, int value, size_t count)
 {
 	struct region *r;
 
-//	GMM_DPRINT("gmm_cudaMemset called\n");
+	GMM_DPRINT("gmm_cudaMemset: %p %d %lu\n", devPtr, value, count);
 
 	if (count <= 0)
 		return cudaErrorInvalidValue;
@@ -1141,6 +1208,28 @@ static int gmm_dtoh(
 	return 0;
 }
 
+static int gmm_dtod(
+		struct region *rd,
+		struct region *rs,
+		void *dst,
+		const void *src,
+		size_t count)
+{
+	unsigned long offd = (unsigned long)(dst - rd->swp_addr);
+	unsigned long offs = (unsigned long)(src - rs->swp_addr);
+	int ret = 0;
+
+	if (rd->state == STATE_DETACHED)
+		ret = gmm_dtoh(rs, dst, src, count);
+	else if (rs->state == STATE_DETACHED)
+		ret = gmm_htod(rd, dst, src, count);
+	else {
+		// TODO: block by block
+	}
+
+	return ret;
+}
+
 // Look up a memory object by the ptr passed from user program.
 // ptr should fall within the virtual memory area of the host swap buffer of
 // the memory object, if it can be found.
@@ -1150,11 +1239,15 @@ struct region *region_lookup(struct gmm_context *ctx, const void *ptr)
 	struct list_head *pos;
 	int found = 0;
 
+	//GMM_DPRINT("region_lookup begin: %p\n", ptr);
+
 	acquire(&ctx->lock_alloced);
-	list_for_each(pos, &ctx->list_alloced) {
+	list_for_each(pos, &(ctx->list_alloced)) {
 		r = list_entry(pos, struct region, entry_alloced);
-		if ((unsigned long)ptr >= (unsigned long)r->swp_addr &&
-			(unsigned long)ptr < ((unsigned long)r->swp_addr + r->size)) {
+		//GMM_DPRINT("region_lookup: %p %ld\n", r->swp_addr, r->size);
+		if ((unsigned long)ptr >= (unsigned long)(r->swp_addr) &&
+			(unsigned long)ptr <
+			((unsigned long)(r->swp_addr) + (unsigned long)(r->size))) {
 			found = 1;
 			break;
 		}
@@ -1573,5 +1666,6 @@ static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 	}
 	nv_cudaStreamAddCallback(stream_issue, gmm_kernel_callback, (void *)pcb, 0);
 
+	//GMM_DPRINT("kernel launched\n");
 	return 0;
 }
