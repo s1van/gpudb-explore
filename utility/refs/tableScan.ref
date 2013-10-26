@@ -2,7 +2,7 @@ genScanFilter_init_(int|float)_(eq|gth|lth|geq|leq)	0	HINT_READ	3	HINT_WRITE
 genScanFilter_dict_(init|or|and)	0	HINT_READ	4	HINT_READ	5	HINT_WRITE
 genScanFilter_rle	0	HINT_READ	4	HINT_READ	5	HINT_WRITE
 transform_dict_filter_(and|init|or)	0	HINT_READ	1	HINT_READ	4	HINT_WRITE
-genScanFilter_(and|or)_(int|float)_(eq|gth|lth|geq|leq)	0	HINT_READ	1	HINT_WRITE
+genScanFilter_(and|or)_(int|float)_(eq|gth|lth|geq|leq)	0	HINT_READ	3	HINT_WRITE
 countScanNum	0	HINT_READ	2	HINT_WRITE
 scan_(other|other_soa|int)	0	HINT_READ	3	HINT_READ	5	HINT_READ	6	HINT_WRITE
 scan_dict_(other|int)	0	HINT_READ	1	HINT_READ	5	HINT_READ	7	HINT_READ	8	HINT_WRITE
