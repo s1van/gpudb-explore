@@ -1215,8 +1215,6 @@ static int gmm_dtod(
 		const void *src,
 		size_t count)
 {
-	unsigned long offd = (unsigned long)(dst - rd->swp_addr);
-	unsigned long offs = (unsigned long)(src - rs->swp_addr);
 	int ret = 0;
 
 	if (rd->state == STATE_DETACHED)
