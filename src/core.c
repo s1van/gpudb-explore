@@ -44,6 +44,7 @@ static int gmm_dtoh(
 		void *dst,
 		const void *src,
 		size_t count);
+static int gmm_memset(struct region *r, void *dst, int value, size_t count);
 static int gmm_load(struct region **rgns, int nrgns);
 static int gmm_launch(const char *entry, struct region **rgns, int nrgns);
 struct region *region_lookup(struct gmm_context *ctx, const void *ptr);
@@ -216,11 +217,12 @@ cudaError_t gmm_cudaFree(void *devPtr)
 	struct region *r;
 
 	if (!(r = region_lookup(pcontext, devPtr))) {
-		GMM_DPRINT("could not find memory region containing %p\n", devPtr);
+		GMM_DPRINT("cannot find region containing %p in gmm_cudaFree\n", \
+				devPtr);
 		// XXX: this is a workaround for regions allocated by CUDA runtime.
 		// Return success even if devPtr is not found. FIXME!
-		return cudaSuccess;
-		//return cudaErrorInvalidDevicePointer;
+		//return cudaSuccess;
+		return cudaErrorInvalidDevicePointer;
 	}
 
 	if (gmm_free(r) < 0)
@@ -554,10 +556,34 @@ finish:
 	return ret;
 }
 
-// TODO
-cudaError_t gmm_cudaMemset(void * devPtr, int value, size_t count)
+cudaError_t gmm_cudaMemset(void *devPtr, int value, size_t count)
 {
-	return nv_cudaMemset(devPtr, value, count);
+	struct region *r;
+
+//	GMM_DPRINT("gmm_cudaMemset called\n");
+
+	if (count <= 0)
+		return cudaErrorInvalidValue;
+
+	r = region_lookup(pcontext, devPtr);
+	if (!r) {
+		GMM_DPRINT("cannot find region containing %p in gmm_cudaMemset\n", \
+				devPtr);
+		return cudaErrorInvalidDevicePointer;
+	}
+	if (r->state == STATE_FREEING) {
+		GMM_DPRINT("region already freed\n");
+		return cudaErrorInvalidValue;
+	}
+	if (devPtr + count > r->swp_addr + r->size) {
+		GMM_DPRINT("cudaMemset out of region boundary\n");
+		return cudaErrorInvalidValue;
+	}
+
+	if (gmm_memset(r, devPtr, value, count) < 0)
+		return cudaErrorUnknown;
+
+	return cudaSuccess;
 }
 
 // The return value of this function tells whether the region has been
@@ -956,6 +982,58 @@ static int gmm_htod(
 	return 0;
 }
 #endif
+
+
+static int gmm_memset(struct region *r, void *dst, int value, size_t count)
+{
+	unsigned long off, end, size;
+	int ifirst, ilast, iblock;
+	char *skipped;
+	void *s;
+
+	// The temporary source buffer holding %value's
+	s = malloc(BLOCKSIZE);
+	if (!s) {
+		GMM_DPRINT("malloc failed for memset source buffer: %s\n", \
+				strerror(errno));
+		return -1;
+	}
+	memset(s, value, BLOCKSIZE);
+
+	off = (unsigned long)(dst - r->swp_addr);
+	end = off + count;
+	ifirst = BLOCKIDX(off);
+	ilast = BLOCKIDX(end - 1);
+	skipped = (char *)malloc(ilast - ifirst + 1);
+	if (!skipped) {
+		GMM_DPRINT("malloc failed for skipped[]: %s\n", strerror(errno));
+		free(s);
+		return -1;
+	}
+
+	// Copy data block by block, skipping blocks that are not available
+	// for immediate operation (very likely due to being evicted).
+	// skipped[] records whether each block was skipped.
+	for (iblock = ifirst; iblock <= ilast; iblock++) {
+		size = MIN(BLOCKUP(off), end) - off;
+		gmm_htod_block(r, off, s, size, iblock, 1, skipped + (iblock - ifirst));
+		off += size;
+	}
+
+	// Then, copy the rest blocks, no skipping.
+	off = (unsigned long)(dst - r->swp_addr);
+	for (iblock = ifirst; iblock <= ilast; iblock++) {
+		size = MIN(BLOCKUP(off), end) - off;
+		if (skipped[iblock - ifirst])
+			gmm_htod_block(r, off, s, size, iblock, 0, NULL);
+		off += size;
+	}
+
+	free(skipped);
+	free(s);
+	return 0;
+}
+
 
 static int gmm_dtoh_block(
 		struct region *r,
