@@ -1224,7 +1224,24 @@ static int gmm_dtod(
 	else if (rs->state == STATE_DETACHED)
 		ret = gmm_htod(rd, dst, src, count);
 	else {
-		// TODO: block by block
+		// TODO: copy data directly from rs to rd
+		void *temp = malloc(count);
+		if (!temp) {
+			GMM_DPRINT("malloc failed for temp dtod buffer: %s\n", \
+					strerror(errno));
+			return -1;
+		}
+		if (gmm_dtoh(rs, temp, src, count) < 0) {
+			GMM_DPRINT("failed to copy data to temp dtod buffer\n");
+			free(temp);
+			return -1;
+		}
+		if (gmm_htod(rd, dst, temp, count) < 0) {
+			GMM_DPRINT("failed to copy data from temp dtod buffer\n");
+			free(temp);
+			return -1;
+		}
+		free(temp);
 	}
 
 	return ret;
