@@ -309,7 +309,8 @@ cudaError_t cudaReference(int which_arg, int flags)
 #ifdef GMM_CONFIG_RW
 			rwflags[nrefs++] = flags;
 #else
-			rwflags[nrefs++] = HINT_DEFAULT;
+			rwflags[nrefs++] = HINT_DEFAULT |
+					(flags & (HINT_PTARRAY | HINT_PTAREAD | HINT_PTAWRITE));
 #endif
 		}
 		else {

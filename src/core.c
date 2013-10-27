@@ -427,16 +427,18 @@ cudaError_t gmm_cudaSetupArgument(
 	// (but parsing errors are possible, e.g., when the user passes a
 	// long argument that happen to lay within some region's host swap
 	// buffer area).
-	// XXX: we should assume all memory regions are to be referenced
-	// if no reference hints are given.
 	if (nrefs > 0) {
 		for (i = 0; i < nrefs; i++) {
 			if (refs[i] == nargs)
 				break;
 		}
 		if (i < nrefs) {
-			if (size != sizeof(void *))
-				panic("cudaSetupArgument does not match cudaReference");
+			if (size != sizeof(void *)) {
+				GMM_DPRINT("argument size does not match cudaReference " \
+						"%p (%d)", *(void **)arg, nargs);
+				return cudaErrorUnknown;
+				//panic("cudaSetupArgument does not match cudaReference");
+			}
 			r = region_lookup(pcontext, *(void **)arg);
 			if (!r) {
 				// TODO: report error more gracefully
@@ -448,6 +450,8 @@ cudaError_t gmm_cudaSetupArgument(
 			is_dptr = 1;
 		}
 	}
+	// TODO: we should assume all memory regions are to be referenced
+	// if no reference hints are given.
 	else if (size == sizeof(void *)) {
 		r = region_lookup(pcontext, *(void **)arg);
 		if (r)
@@ -482,22 +486,36 @@ cudaError_t gmm_cudaSetupArgument(
 // I.e., if (nargs == 0) do the following; else add all regions;
 static long regions_referenced(struct region ***prgns, int *pnrgns)
 {
-	struct region **rgns;
+	struct region **rgns, **rstart, **rend;
 	long total = 0;
 	int nrgns = 0;
 	int i;
 
 	if (nrefs > NREFS)
 		panic("nrefs");
-	if (nargs < 0 || nargs > NREFS)
+	if (nargs <= 0 || nargs > NREFS)
 		panic("nargs");
 
-	rgns = (struct region **)malloc(sizeof(*rgns) * nargs);
+	// The upper bound of the number of regions
+	for (i = 0; i < nargs; i++) {
+		if (kargs[i].is_dptr) {
+			nrgns++;
+			if (kargs[i].arg.arg1.flags & HINT_PTARRAY) {
+				if (kargs[i].arg.arg1.r->size % sizeof(void *))
+					panic("PTARRAY region size error");
+				nrgns += kargs[i].arg.arg1.r->size / sizeof(void *);
+			}
+		}
+	}
+
+	rgns = (struct region **)malloc(sizeof(*rgns) * nrgns);
 	if (!rgns) {
 		GMM_DPRINT("malloc failed for region array: %s\n", strerror(errno));
 		return -1;
 	}
+	nrgns = 0;
 
+	// Now set the regions to be referenced
 	for (i = 0; i < nargs; i++) {
 		if (kargs[i].is_dptr) {
 			if (!is_included((void **)rgns, nrgns,
@@ -508,6 +526,18 @@ static long regions_referenced(struct region ***prgns, int *pnrgns)
 			}
 			else
 				kargs[i].arg.arg1.r->rwhint.flags |= kargs[i].arg.arg1.flags;
+
+			if (kargs[i].arg.arg1.flags & HINT_PTARRAY) {
+				void *tmp = (struct region **)malloc(kargs[i].arg.arg1.r->size);
+				if (gmm_dtoh(kargs[i].arg.arg1.r, tmp,
+						kargs[i].arg.arg1.r->swp_addr,
+						kargs[i].arg.arg1.r->size) < 0) {
+					free(tmp);
+					free(rgns);
+					GMM_DPRINT("failed to get ptarray data\n");
+					return -1;
+				}
+			}
 		}
 	}
 
@@ -585,6 +615,9 @@ reload:
 			region_valid(rgns[i], 0);
 		}
 	}
+
+	// Replace ptarray with real dev pointers
+	// TODO: after the kernel finishes, we have to restore their swp pointers
 
 	// Push all kernel arguments.
 	for (i = 0; i < nargs; i++) {
@@ -1222,7 +1255,7 @@ static int gmm_dtod(
 	int ret = 0;
 	void *temp;
 
-	GMM_DPRINT("gmm_dtod begins\n");
+	//GMM_DPRINT("gmm_dtod begins\n");
 
 	temp = malloc(count);
 	if (!temp) {
@@ -1236,14 +1269,14 @@ static int gmm_dtod(
 		free(temp);
 		return -1;
 	}
-	GMM_DPRINT("gmm_dtoh finished\n");
+	//GMM_DPRINT("gmm_dtoh finished\n");
 
 	if (gmm_htod(rd, dst, temp, count) < 0) {
 		GMM_DPRINT("failed to copy data from temp dtod buffer\n");
 		free(temp);
 		return -1;
 	}
-	GMM_DPRINT("gmm_htod finished\n");
+	//GMM_DPRINT("gmm_htod finished\n");
 
 	free(temp);
 	return ret;
