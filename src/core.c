@@ -328,7 +328,7 @@ cudaError_t gmm_cudaMemcpyDtoD(
 
 	rs = region_lookup(pcontext, src);
 	if (!rs) {
-		GMM_DPRINT("cannot find device memory region containing %p\n", src);
+		GMM_DPRINT("cannot find src region containing %p\n", src);
 		return cudaErrorInvalidDevicePointer;
 	}
 	if (rs->state == STATE_FREEING) {
@@ -342,7 +342,7 @@ cudaError_t gmm_cudaMemcpyDtoD(
 
 	rd = region_lookup(pcontext, dst);
 	if (!rd) {
-		GMM_DPRINT("cannot find device memory region containing %p\n", src);
+		GMM_DPRINT("cannot find dst region containing %p\n", dst);
 		return cudaErrorInvalidDevicePointer;
 	}
 	if (rd->state == STATE_FREEING) {
