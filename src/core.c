@@ -219,7 +219,7 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 	atomic_set(&r->pinned, 0);
 	r->rwhint.flags = HINT_DEFAULT;
 
-	GMM_DPRINT("cudaMalloc: %p %lu\n", r->swp_addr, size);
+	//GMM_DPRINT("cudaMalloc: %p %lu\n", r->swp_addr, size);
 
 	list_alloced_add(pcontext, r);
 	*devPtr = r->swp_addr;
@@ -239,7 +239,7 @@ cudaError_t gmm_cudaFree(void *devPtr)
 		return cudaErrorInvalidDevicePointer;
 	}
 
-	GMM_DPRINT("cudaFree: %p\n", r->swp_addr);
+	//GMM_DPRINT("cudaFree: %p\n", r->swp_addr);
 
 	if (gmm_free(r) < 0)
 		return cudaErrorUnknown;
@@ -385,7 +385,7 @@ cudaError_t gmm_cudaConfigureCall(
 		size_t sharedMem,
 		cudaStream_t stream)
 {
-	GMM_DPRINT("gmm_cudaConfigureCall: %d %d\n", gridDim.x, blockDim.x);
+	//GMM_DPRINT("gmm_cudaConfigureCall: %d %d\n", gridDim.x, blockDim.x);
 	stream_issue = pcontext->stream_kernel;
 	return nv_cudaConfigureCall(gridDim, blockDim, sharedMem, stream_issue);
 }
@@ -419,7 +419,7 @@ cudaError_t gmm_cudaSetupArgument(
 	int is_dptr = 0;
 	int i = 0;
 
-	GMM_DPRINT("gmm_cudaSetupArgument: %p %lu %lu\n", arg, size, offset);
+	//GMM_DPRINT("gmm_cudaSetupArgument: %p %lu %lu\n", arg, size, offset);
 
 	// Test whether this argument is a device memory pointer.
 	// If it is, record it and postpone its pushing until cudaLaunch.
@@ -550,7 +550,7 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 	long total = 0;
 	int i, ldret;
 
-	GMM_DPRINT("gmm_cudaLaunch\n");
+	//GMM_DPRINT("gmm_cudaLaunch\n");
 
 	// NOTE: it is possible nrgns == 0 when regions_referenced
 	// returns. Consider a kernel that only uses registers, for
@@ -756,7 +756,10 @@ static void block_sync(struct region *r, int block)
 	// otherwise it is possible that the data we read are inconsistent
 	// with what's being written by the kernel.
 	// TODO: will make the modifying flags more fine-grained (block level).
-	while (atomic_read(&r->modifying) > 0) ;
+	//GMM_DPRINT("before sync loop %p (%d)\n", r, atomic_read(&r->modifying));
+	while (atomic_read(&r->modifying) > 0)
+		;//GMM_DPRINT("in sync loop %p (%d)\n", r, atomic_read(&r->modifying));
+	//GMM_DPRINT("after sync loop\n");
 
 	off = block * BLOCKSIZE;
 	size = MIN(off + BLOCKSIZE, r->size) - off;
@@ -1050,7 +1053,7 @@ static int gmm_htod(
 }
 #endif
 
-
+// TODO: improve performance
 static int gmm_memset(struct region *r, void *dst, int value, size_t count)
 {
 	unsigned long off, end, size;
@@ -1100,7 +1103,6 @@ static int gmm_memset(struct region *r, void *dst, int value, size_t count)
 	free(s);
 	return 0;
 }
-
 
 static int gmm_dtoh_block(
 		struct region *r,
@@ -1208,6 +1210,8 @@ static int gmm_dtoh(
 	return 0;
 }
 
+// TODO: this is only a toy implementation. we should copy data
+// directly from rs to rd
 static int gmm_dtod(
 		struct region *rd,
 		struct region *rs,
@@ -1216,32 +1220,32 @@ static int gmm_dtod(
 		size_t count)
 {
 	int ret = 0;
+	void *temp;
 
-	if (rd->state == STATE_DETACHED)
-		ret = gmm_dtoh(rs, dst, src, count);
-	else if (rs->state == STATE_DETACHED)
-		ret = gmm_htod(rd, dst, src, count);
-	else {
-		// TODO: copy data directly from rs to rd
-		void *temp = malloc(count);
-		if (!temp) {
-			GMM_DPRINT("malloc failed for temp dtod buffer: %s\n", \
-					strerror(errno));
-			return -1;
-		}
-		if (gmm_dtoh(rs, temp, src, count) < 0) {
-			GMM_DPRINT("failed to copy data to temp dtod buffer\n");
-			free(temp);
-			return -1;
-		}
-		if (gmm_htod(rd, dst, temp, count) < 0) {
-			GMM_DPRINT("failed to copy data from temp dtod buffer\n");
-			free(temp);
-			return -1;
-		}
-		free(temp);
+	GMM_DPRINT("gmm_dtod begins\n");
+
+	temp = malloc(count);
+	if (!temp) {
+		GMM_DPRINT("malloc failed for temp dtod buffer: %s\n", \
+				strerror(errno));
+		return -1;
 	}
 
+	if (gmm_dtoh(rs, temp, src, count) < 0) {
+		GMM_DPRINT("failed to copy data to temp dtod buffer\n");
+		free(temp);
+		return -1;
+	}
+	GMM_DPRINT("gmm_dtoh finished\n");
+
+	if (gmm_htod(rd, dst, temp, count) < 0) {
+		GMM_DPRINT("failed to copy data from temp dtod buffer\n");
+		free(temp);
+		return -1;
+	}
+	GMM_DPRINT("gmm_htod finished\n");
+
+	free(temp);
 	return ret;
 }
 
@@ -1635,8 +1639,10 @@ void CUDART_CB gmm_kernel_callback(
 	int i;
 	//GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
 	for (i = 0; i < pcb->nrgns; i++) {
-		if (pcb->mod[i])
-			atomic_dec(&pcb->rgns[i]->modifying);
+		if (pcb->mod[i]) {
+			//GMM_DPRINT("dec modifying %p (%d)\n", pcb->rgns[i], atomic_read(&(pcb->rgns[i]->modifying)));
+			atomic_dec(&(pcb->rgns[i]->modifying));
+		}
 		region_unpin(pcb->rgns[i]);
 	}
 	free(pcb);
@@ -1660,11 +1666,12 @@ static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 		return -1;
 	}
 	if (nrgns > 0)
-		memcpy(&pcb->rgns, rgns, sizeof(void *) * nrgns);
+		memcpy(pcb->rgns, rgns, sizeof(void *) * nrgns);
 	for (i = 0; i < nrgns; i++) {
 		if (rgns[i]->rwhint.flags & HINT_WRITE) {
+			GMM_DPRINT("inc modifying %p (%d)\n", rgns[i], atomic_read(&(rgns[i]->modifying)));
 			pcb->mod[i] = 1;
-			atomic_inc(&rgns[i]->modifying);
+			atomic_inc(&(rgns[i]->modifying));
 		}
 		else
 			pcb->mod[i] = 0;
@@ -1674,7 +1681,7 @@ static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 	if (nv_cudaLaunch(entry) != cudaSuccess) {
 		for (i = 0; i < nrgns; i++) {
 			if (pcb->mod[i])
-				atomic_dec(&pcb->rgns[i]->modifying);
+				atomic_dec(&(pcb->rgns[i]->modifying));
 		}
 		free(pcb);
 		return -1;
