@@ -1,6 +1,6 @@
 # EDIT ME: Test cases
 TESTS = test_spinlock test_init_fini test_malloc test_memcpy test_launch \
-		test_evict_local test_evict_remote
+		test_evict_local test_evict_remote test_ptarray
 
 # Paths
 CUDAPATH = /usr/local/cuda
