@@ -48,7 +48,8 @@ struct region {
 	struct spinlock lock;	// the lock that protects memory object state
 	region_state_t state;	// state of the object
 	atomic_t pinned;		// atomic pin counter
-	atomic_t modifying;		// being modified by how many kernels
+	atomic_t writing;		// being written by how many kernels
+	atomic_t reading;		// being read by how many kernels
 
 	int flags;
 	struct rwhint rwhint;	// rw hint
@@ -87,7 +88,7 @@ struct karg {
 // Kernel callback structure
 struct kcb {
 	struct region *rgns[NREFS];	// Regions referenced by the kernel
-	char mod[NREFS];			// is each region modified by the kernel?
+	int flags[NREFS];			// is each region read/modified by the kernel?
 	int nrgns;					// Number of regions referenced
 };
 

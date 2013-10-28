@@ -11,9 +11,10 @@
 #define HINT_PTARRAY	4
 #define HINT_PTAREAD	8
 #define HINT_PTAWRITE	16
+#define HINT_PTADEFAULT	(HINT_PTAREAD | HINT_PTAWRITE)
 #define HINT_PTAMASK	(HINT_PTAREAD | HINT_PTAWRITE)
 
-// Kernel priority hints
+// Kernel priority hints. Highest priority is 0.
 #define PRIO_LOWEST		15
 #define PRIO_DEFAULT	PRIO_LOWEST
 

@@ -54,6 +54,8 @@ static int gmm_memset(struct region *r, void *dst, int value, size_t count);
 static int gmm_load(struct region **rgns, int nrgns);
 static int gmm_launch(const char *entry, struct region **rgns, int nrgns);
 struct region *region_lookup(struct gmm_context *ctx, const void *ptr);
+static void block_sync(struct region *r, int block);
+
 
 // The GMM context for this process
 struct gmm_context *pcontext = NULL;
@@ -201,19 +203,26 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags)
 		free(r);
 		return cudaErrorMemoryAllocation;
 	}
+
 	if (flags & HINT_PTARRAY) {
-		r->pta_addr = malloc(size);
+		if (size % sizeof(void *)) {
+			GMM_DPRINT("dptr array size (%lu) not aligned\n", size);
+			free(r->swp_addr);
+			free(r);
+			return cudaErrorInvalidValue;
+		}
+		r->pta_addr = calloc(1, size);
 		if (!r->pta_addr) {
 			GMM_DPRINT("malloc failed for dptr array: %s\n", strerror(errno));
 			free(r->swp_addr);
 			free(r);
 			return cudaErrorMemoryAllocation;
 		}
-		GMM_DPRINT("pta_addr alloced for %p (%p)\n", r, r->pta_addr);
+		GMM_DPRINT("pta_addr (%p) alloced for %p\n", r->pta_addr, r);
 	}
 
 	nblocks = NRBLOCKS(size);
-	r->blocks = (struct block *)malloc(sizeof(struct block) * nblocks);
+	r->blocks = (struct block *)calloc(nblocks, sizeof(struct block));
 	if (!r->blocks) {
 		GMM_DPRINT("malloc failed for blocks array: %s\n", strerror(errno));
 		if (r->pta_addr)
@@ -222,9 +231,8 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags)
 		free(r);
 		return cudaErrorMemoryAllocation;
 	}
-	memset(r->blocks, 0, sizeof(struct block) * nblocks);
 
-	// TODO: test how CUDA runtime align the size of device memory allocations
+	// TODO: test how CUDA runtime aligns the size of device memory allocations
 	r->size = (long)size;
 	initlock(&r->lock);
 	r->state = STATE_DETACHED;
@@ -244,11 +252,7 @@ cudaError_t gmm_cudaFree(void *devPtr)
 	struct region *r;
 
 	if (!(r = region_lookup(pcontext, devPtr))) {
-		GMM_DPRINT("cannot find region containing %p in gmm_cudaFree\n", \
-				devPtr);
-		// XXX: this is a workaround for regions allocated by CUDA runtime.
-		// Return success even if devPtr is not found. FIXME!
-		//return cudaSuccess;
+		GMM_DPRINT("cannot find region containing %p in cudaFree\n", devPtr);
 		return cudaErrorInvalidDevicePointer;
 	}
 
@@ -477,7 +481,7 @@ cudaError_t gmm_cudaSetupArgument(
 		if (nrefs > 0)
 			kargs[nargs].arg.arg1.flags = rwflags[i];
 		else
-			kargs[nargs].arg.arg1.flags = HINT_DEFAULT;
+			kargs[nargs].arg.arg1.flags = HINT_DEFAULT | HINT_PTADEFAULT;
 	}
 	else {
 		// This argument is not a device memory pointer.
@@ -508,16 +512,14 @@ static long regions_referenced(struct region ***prgns, int *pnrgns)
 	if (nargs <= 0 || nargs > NREFS)
 		panic("nargs");
 
-	// Get the upper bound of the number of regions.
+	// Get the upper bound of the number of unique regions.
 	for (i = 0; i < nargs; i++) {
 		if (kargs[i].is_dptr) {
 			r = kargs[i].arg.arg1.r;
 			nrgns++;
-			if (r->flags & HINT_PTARRAY) {
-				if (r->size % sizeof(void *))
-					panic("PTARRAY region size error");
+			// Here we assume at most one level of dptr arrays
+			if (r->flags & HINT_PTARRAY)
 				nrgns += r->size / sizeof(void *);
-			}
 		}
 	}
 	if (nrgns <= 0)
@@ -806,6 +808,7 @@ re_acquire:
 
 // TODO: provide two implementations - sync and async.
 // For async, use streamcallback to unpin if necessary.
+// TODO: use host pinned buffer.
 static int gmm_memcpy_dtoh(void *dst, const void *src, unsigned long size)
 {
 	if (nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyDeviceToHost,
@@ -823,6 +826,7 @@ static int gmm_memcpy_dtoh(void *dst, const void *src, unsigned long size)
 }
 
 // TODO: sync and async.
+// TODO: use host pinned buffer.
 static int gmm_memcpy_htod(void *dst, const void *src, unsigned long size)
 {
 	if (nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyHostToDevice,
@@ -864,7 +868,7 @@ static void block_sync(struct region *r, int block)
 	// with what's being written by the kernel.
 	// TODO: will make the modifying flags more fine-grained (block level).
 	//GMM_DPRINT("before sync loop %p (%d)\n", r, atomic_read(&r->modifying));
-	while (atomic_read(&r->modifying) > 0)
+	while (atomic_read(&r->writing) > 0)
 		;//GMM_DPRINT("in sync loop %p (%d)\n", r, atomic_read(&r->modifying));
 	//GMM_DPRINT("after sync loop\n");
 
@@ -877,7 +881,7 @@ static void block_sync(struct region *r, int block)
 	}
 	else {
 		// Sync from host swap buffer to device
-		while (region_pinned(r) > 0) ;
+		while (atomic_read(&r->reading) > 0) ;
 		gmm_memcpy_htod(r->dev_addr + off, r->swp_addr + off, size);
 		r->blocks[block].dev_valid = 1;
 	}
@@ -1037,6 +1041,16 @@ static int gmm_htod_pta(
 		size_t count)
 {
 	unsigned long off = (unsigned long)(dst - r->swp_addr);
+
+	if (off % sizeof(void *)) {
+		GMM_DPRINT("offset (%lu) not aligned for host to pta memcpy\n", off);
+		return -1;
+	}
+	if (count % sizeof(void *)) {
+		GMM_DPRINT("count (%lu) not aligned for host to pta memcpy\n", count);
+		return -1;
+	}
+
 	memcpy(r->pta_addr + off, src, count);
 	return 0;
 }
@@ -1182,6 +1196,14 @@ static int gmm_htod(
 }
 #endif
 
+static int gmm_memset_pta(struct region *r, void *dst, int value, size_t count)
+{
+	unsigned long off = (unsigned long)(dst - r->swp_addr);
+	// We don't do alignment checks for memset
+	memset(r->pta_addr + off, value, count);
+	return 0;
+}
+
 // TODO: improve performance
 static int gmm_memset(struct region *r, void *dst, int value, size_t count)
 {
@@ -1190,11 +1212,8 @@ static int gmm_memset(struct region *r, void *dst, int value, size_t count)
 	char *skipped;
 	void *s;
 
-	if (r->flags & HINT_PTARRAY) {
-		off = (unsigned long)(dst - r->swp_addr);
-		memset(r->pta_addr + off, value, count);
-		return 0;
-	}
+	if (r->flags & HINT_PTARRAY)
+		return gmm_memset_pta(r, dst, value, count);
 
 	// The temporary source buffer holding %value's
 	s = malloc(BLOCKSIZE);
@@ -1297,6 +1316,27 @@ static int gmm_dtoh_block(
 	return 0;
 }
 
+static int gmm_dtoh_pta(
+		struct region *r,
+		void *dst,
+		const void *src,
+		size_t count)
+{
+	unsigned long off = (unsigned long)(src - r->swp_addr);
+
+	if (off % sizeof(void *)) {
+		GMM_DPRINT("offset (%lu) not aligned for pta-to-host memcpy\n", off);
+		return -1;
+	}
+	if (count % sizeof(void *)) {
+		GMM_DPRINT("count (%lu) not aligned for pta-to-host memcpy\n", count);
+		return -1;
+	}
+
+	memcpy(dst, r->pta_addr + off, count);
+	return 0;
+}
+
 // TODO: It is possible to achieve pipelined copying, i.e., copy a block from
 // its host swap buffer to user buffer while the next block is being fetched
 // from device memory.
@@ -1312,10 +1352,8 @@ static int gmm_dtoh(
 	void *d = dst;
 	char *skipped;
 
-	if (r->flags & HINT_PTARRAY) {
-		memcpy(dst, r->pta_addr + off, count);
-		return 0;
-	}
+	if (r->flags & HINT_PTARRAY)
+		return gmm_dtoh_pta(r, dst, src, count);
 
 	skipped = (char *)malloc(BLOCKIDX(end - 1) - ifirst + 1);
 	if (!skipped) {
@@ -1783,10 +1821,10 @@ void CUDART_CB gmm_kernel_callback(
 	int i;
 	//GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
 	for (i = 0; i < pcb->nrgns; i++) {
-		if (pcb->mod[i]) {
-			//GMM_DPRINT("dec modifying %p (%d)\n", pcb->rgns[i], atomic_read(&(pcb->rgns[i]->modifying)));
-			atomic_dec(&(pcb->rgns[i]->modifying));
-		}
+		if (pcb->flags[i] & HINT_WRITE)
+			atomic_dec(&(pcb->rgns[i]->writing));
+		if (pcb->flags[i] & HINT_READ)
+			atomic_dec(&(pcb->rgns[i]->reading));
 		region_unpin(pcb->rgns[i]);
 	}
 	free(pcb);
@@ -1812,20 +1850,20 @@ static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 	if (nrgns > 0)
 		memcpy(pcb->rgns, rgns, sizeof(void *) * nrgns);
 	for (i = 0; i < nrgns; i++) {
-		if (rgns[i]->rwhint.flags & HINT_WRITE) {
-			//GMM_DPRINT("inc modifying %p (%d)\n", rgns[i], atomic_read(&(rgns[i]->modifying)));
-			pcb->mod[i] = 1;
-			atomic_inc(&(rgns[i]->modifying));
-		}
-		else
-			pcb->mod[i] = 0;
+		pcb->flags[i] = rgns[i]->rwhint.flags;
+		if (pcb->flags[i] & HINT_WRITE)
+			atomic_inc(&(rgns[i]->writing));
+		if (pcb->flags[i] & HINT_READ)
+			atomic_inc(&(rgns[i]->reading));
 	}
 	pcb->nrgns = nrgns;
 
 	if (nv_cudaLaunch(entry) != cudaSuccess) {
 		for (i = 0; i < nrgns; i++) {
-			if (pcb->mod[i])
-				atomic_dec(&(pcb->rgns[i]->modifying));
+			if (pcb->flags[i] & HINT_WRITE)
+				atomic_dec(&(pcb->rgns[i]->writing));
+			if (pcb->flags[i] & HINT_READ)
+				atomic_dec(&(pcb->rgns[i]->reading));
 		}
 		free(pcb);
 		return -1;

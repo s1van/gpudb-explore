@@ -128,8 +128,10 @@ cudaError_t cudaMallocEx(void **devPtr, size_t size, int flags)
 {
 	if (initialized)
 		return gmm_cudaMalloc(devPtr, size, flags);
-	else
-		return cudaErrorInitializationError;
+	else {
+		GMM_DPRINT("warning: cudaMallocEx called outside of GMM\n");
+		return nv_cudaMalloc(devPtr, size);
+	}
 }
 
 GMM_EXPORT
@@ -310,7 +312,7 @@ cudaError_t cudaReference(int which_arg, int flags)
 			rwflags[nrefs++] = flags;
 #else
 			rwflags[nrefs++] = HINT_DEFAULT |
-					(flags & (HINT_PTARRAY | HINT_PTAREAD | HINT_PTAWRITE));
+					(flags & HINT_PTARRAY) | HINT_PTADEFAULT;
 #endif
 		}
 		else {
