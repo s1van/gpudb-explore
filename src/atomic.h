@@ -1,8 +1,8 @@
 #ifndef _GMM_ATOMIC_H_
 #define _GMM_ATOMIC_H_
 
-typedef int atomic_t;
-typedef long latomic_t;
+typedef volatile int atomic_t;
+typedef volatile long latomic_t;
 
 // Integer atomics
 static inline void atomic_set(atomic_t *ptr, int val)

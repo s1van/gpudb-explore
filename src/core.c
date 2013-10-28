@@ -274,7 +274,7 @@ cudaError_t gmm_cudaMemcpyHtoD(
 {
 	struct region *r;
 
-	GMM_DPRINT("gmm_cudaMemcpyHtoD called\n");
+	//GMM_DPRINT("gmm_cudaMemcpyHtoD called\n");
 
 	if (count <= 0)
 		return cudaErrorInvalidValue;
@@ -306,7 +306,7 @@ cudaError_t gmm_cudaMemcpyDtoH(
 {
 	struct region *r;
 
-	GMM_DPRINT("gmm_cudaMemcpyDtoH called\n");
+	//GMM_DPRINT("gmm_cudaMemcpyDtoH called\n");
 
 	if (count <= 0)
 		return cudaErrorInvalidValue;
@@ -338,7 +338,7 @@ cudaError_t gmm_cudaMemcpyDtoD(
 {
 	struct region *rs, *rd;
 
-	GMM_DPRINT("gmm_cudaMemcpyDtoD called\n");
+	//GMM_DPRINT("gmm_cudaMemcpyDtoD called\n");
 
 	if (count <= 0)
 		return cudaErrorInvalidValue;
@@ -451,8 +451,8 @@ cudaError_t gmm_cudaSetupArgument(
 		}
 		if (i < nrefs) {
 			if (size != sizeof(void *)) {
-				GMM_DPRINT("argument size does not match cudaReference " \
-						"%p (%d)", *(void **)arg, nargs);
+				GMM_DPRINT("argument size (%lu) does not match cudaReference " \
+						"%p (%d)\n", size, *(void **)arg, nargs);
 				return cudaErrorUnknown;
 				//panic("cudaSetupArgument does not match cudaReference");
 			}
@@ -547,6 +547,7 @@ static long regions_referenced(struct region ***prgns, int *pnrgns)
 			if (r->flags & HINT_PTARRAY) {
 				void **pdptr = (void **)(r->pta_addr);
 				void **pend = (void **)(r->pta_addr + r->size);
+				r->rwhint.flags &= ~HINT_WRITE;	// dptr array cannot be written
 
 				// For each device memory pointer contained in this region
 				while (pdptr < pend) {
@@ -635,6 +636,12 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 		goto finish;
 	}
 
+//#ifdef GMM_DEBUG
+//	for (i = 0; i < nrgns; i++) {
+//		gmm_print_region(rgns[i]);
+//	}
+//#endif
+
 reload:
 	launch_wait();
 	ldret = gmm_load(rgns, nrgns);
@@ -683,8 +690,10 @@ reload:
 
 			region_valid(rgns[i], 1);
 			region_inval(rgns[i], 0);
+			//GMM_DPRINT("dingding\n");
 			for (j = 0; j < NRBLOCKS(rgns[i]->size); j++)
 				block_sync(rgns[i], j);
+			//GMM_DPRINT("dongdong\n");
 		}
 	}
 
@@ -867,9 +876,9 @@ static void block_sync(struct region *r, int block)
 	// otherwise it is possible that the data we read are inconsistent
 	// with what's being written by the kernel.
 	// TODO: will make the modifying flags more fine-grained (block level).
-	//GMM_DPRINT("before sync loop %p (%d)\n", r, atomic_read(&r->modifying));
+	//GMM_DPRINT("before sync loop %p (%d)\n", r, atomic_read(&r->writing));
 	while (atomic_read(&r->writing) > 0)
-		;//GMM_DPRINT("in sync loop %p (%d)\n", r, atomic_read(&r->modifying));
+		;//GMM_DPRINT("in sync loop %p (%d)\n", r, atomic_read(&r->writing));
 	//GMM_DPRINT("after sync loop\n");
 
 	off = block * BLOCKSIZE;
@@ -881,7 +890,10 @@ static void block_sync(struct region *r, int block)
 	}
 	else {
 		// Sync from host swap buffer to device
-		while (atomic_read(&r->reading) > 0) ;
+		//GMM_DPRINT("xxx\n");
+		while (atomic_read(&r->reading) > 0)
+			;//GMM_DPRINT("in sync loop %p (%d)\n", r, atomic_read(&r->reading));
+		//GMM_DPRINT("yyy\n");
 		gmm_memcpy_htod(r->dev_addr + off, r->swp_addr + off, size);
 		r->blocks[block].dev_valid = 1;
 	}
@@ -1819,7 +1831,7 @@ void CUDART_CB gmm_kernel_callback(
 {
 	struct kcb *pcb = (struct kcb *)data;
 	int i;
-	//GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
+	GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
 	for (i = 0; i < pcb->nrgns; i++) {
 		if (pcb->flags[i] & HINT_WRITE)
 			atomic_dec(&(pcb->rgns[i]->writing));
@@ -1870,6 +1882,6 @@ static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 	}
 	nv_cudaStreamAddCallback(stream_issue, gmm_kernel_callback, (void *)pcb, 0);
 
-	//GMM_DPRINT("kernel launched\n");
+	GMM_DPRINT("kernel launched\n");
 	return 0;
 }
