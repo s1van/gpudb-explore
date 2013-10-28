@@ -4,10 +4,14 @@
 // Read/write hints
 #define HINT_READ		1
 #define HINT_WRITE		2
+#define HINT_DEFAULT	(HINT_READ | HINT_WRITE)
+#define HINT_MASK		(HINT_READ | HINT_WRITE)
+
+// Device pointer array flags
 #define HINT_PTARRAY	4
 #define HINT_PTAREAD	8
 #define HINT_PTAWRITE	16
-#define HINT_DEFAULT	(HINT_READ | HINT_WRITE)
+#define HINT_PTAMASK	(HINT_PTAREAD | HINT_PTAWRITE)
 
 // Kernel priority hints
 #define PRIO_LOWEST		15

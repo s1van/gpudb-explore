@@ -171,7 +171,7 @@ void gmm_context_fini()
 // We only allocate the host swap buffer space for now, and return
 // the address of the host buffer to the user as the identifier of
 // the object.
-cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
+cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags)
 {
 	struct region *r;
 	int nblocks;
@@ -201,11 +201,23 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 		free(r);
 		return cudaErrorMemoryAllocation;
 	}
+	if (flags & HINT_PTARRAY) {
+		r->pta_addr = malloc(size);
+		if (!r->pta_addr) {
+			GMM_DPRINT("malloc failed for dptr array: %s\n", strerror(errno));
+			free(r->swp_addr);
+			free(r);
+			return cudaErrorMemoryAllocation;
+		}
+		GMM_DPRINT("pta_addr alloced for %p (%p)\n", r, r->pta_addr);
+	}
 
 	nblocks = NRBLOCKS(size);
 	r->blocks = (struct block *)malloc(sizeof(struct block) * nblocks);
 	if (!r->blocks) {
 		GMM_DPRINT("malloc failed for blocks array: %s\n", strerror(errno));
+		if (r->pta_addr)
+			free(r->pta_addr);
 		free(r->swp_addr);
 		free(r);
 		return cudaErrorMemoryAllocation;
@@ -217,6 +229,7 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size)
 	initlock(&r->lock);
 	r->state = STATE_DETACHED;
 	atomic_set(&r->pinned, 0);
+	r->flags = flags;
 	r->rwhint.flags = HINT_DEFAULT;
 
 	//GMM_DPRINT("cudaMalloc: %p %lu\n", r->swp_addr, size);
@@ -364,7 +377,7 @@ cudaError_t gmm_cudaMemGetInfo(size_t *free, size_t *total)
 {
 	*free = (size_t)memsize_free();
 	*total = (size_t)memsize_total();
-	GMM_DPRINT("gmm_cudaMemGetInfo: %lu %lu\n", *free, *total);
+	//GMM_DPRINT("gmm_cudaMemGetInfo: %lu %lu\n", *free, *total);
 	return cudaSuccess;
 }
 
@@ -441,7 +454,6 @@ cudaError_t gmm_cudaSetupArgument(
 			}
 			r = region_lookup(pcontext, *(void **)arg);
 			if (!r) {
-				// TODO: report error more gracefully
 				GMM_DPRINT("cannot find region containing %p (%d) in " \
 						"gmm_cudaSetupArgument\n", *(void **)arg, nargs);
 				return cudaErrorUnknown;
@@ -481,12 +493,12 @@ cudaError_t gmm_cudaSetupArgument(
 	return cudaSuccess;
 }
 
-// XXX: we should assume all memory regions are to be
-// referenced if no reference hints are given.
-// I.e., if (nargs == 0) do the following; else add all regions;
+// TODO: We should assume that all memory regions are referenced
+// if no reference hints are given.
+// I.e., if (nargs == 0) do the following; else add all regions.
 static long regions_referenced(struct region ***prgns, int *pnrgns)
 {
-	struct region **rgns, **rstart, **rend;
+	struct region **rgns, *r;
 	long total = 0;
 	int nrgns = 0;
 	int i;
@@ -496,17 +508,20 @@ static long regions_referenced(struct region ***prgns, int *pnrgns)
 	if (nargs <= 0 || nargs > NREFS)
 		panic("nargs");
 
-	// The upper bound of the number of regions
+	// Get the upper bound of the number of regions.
 	for (i = 0; i < nargs; i++) {
 		if (kargs[i].is_dptr) {
+			r = kargs[i].arg.arg1.r;
 			nrgns++;
-			if (kargs[i].arg.arg1.flags & HINT_PTARRAY) {
-				if (kargs[i].arg.arg1.r->size % sizeof(void *))
+			if (r->flags & HINT_PTARRAY) {
+				if (r->size % sizeof(void *))
 					panic("PTARRAY region size error");
-				nrgns += kargs[i].arg.arg1.r->size / sizeof(void *);
+				nrgns += r->size / sizeof(void *);
 			}
 		}
 	}
+	if (nrgns <= 0)
+		panic("nrgns");
 
 	rgns = (struct region **)malloc(sizeof(*rgns) * nrgns);
 	if (!rgns) {
@@ -515,27 +530,47 @@ static long regions_referenced(struct region ***prgns, int *pnrgns)
 	}
 	nrgns = 0;
 
-	// Now set the regions to be referenced
+	// Now set the regions to be referenced.
 	for (i = 0; i < nargs; i++) {
 		if (kargs[i].is_dptr) {
-			if (!is_included((void **)rgns, nrgns,
-					(void*)(kargs[i].arg.arg1.r))) {
-				rgns[nrgns++] = kargs[i].arg.arg1.r;
-				kargs[i].arg.arg1.r->rwhint.flags = kargs[i].arg.arg1.flags;
-				total += kargs[i].arg.arg1.r->size;
+			r = kargs[i].arg.arg1.r;
+			if (!is_included((void **)rgns, nrgns, (void*)r)) {
+				rgns[nrgns++] = r;
+				r->rwhint.flags = kargs[i].arg.arg1.flags & HINT_MASK;
+				total += r->size;
 			}
 			else
-				kargs[i].arg.arg1.r->rwhint.flags |= kargs[i].arg.arg1.flags;
+				r->rwhint.flags |= kargs[i].arg.arg1.flags & HINT_MASK;
 
-			if (kargs[i].arg.arg1.flags & HINT_PTARRAY) {
-				void *tmp = (struct region **)malloc(kargs[i].arg.arg1.r->size);
-				if (gmm_dtoh(kargs[i].arg.arg1.r, tmp,
-						kargs[i].arg.arg1.r->swp_addr,
-						kargs[i].arg.arg1.r->size) < 0) {
-					free(tmp);
-					free(rgns);
-					GMM_DPRINT("failed to get ptarray data\n");
-					return -1;
+			if (r->flags & HINT_PTARRAY) {
+				void **pdptr = (void **)(r->pta_addr);
+				void **pend = (void **)(r->pta_addr + r->size);
+
+				// For each device memory pointer contained in this region
+				while (pdptr < pend) {
+					r = region_lookup(pcontext, *pdptr);
+					if (!r) {
+						GMM_DPRINT("warning: cannot find region for dptr " \
+								"%p (%d)\n", *pdptr, i);
+						pdptr++;
+						continue;
+					}
+					if (!is_included((void **)rgns, nrgns, (void*)r)) {
+						rgns[nrgns++] = r;
+						r->rwhint.flags =
+								((kargs[i].arg.arg1.flags & HINT_PTAREAD) ?
+										HINT_READ : 0) |
+								((kargs[i].arg.arg1.flags & HINT_PTAWRITE) ?
+										HINT_WRITE : 0);
+						total += r->size;
+					}
+					else
+						r->rwhint.flags |=
+								((kargs[i].arg.arg1.flags & HINT_PTAREAD) ?
+										HINT_READ : 0) |
+								((kargs[i].arg.arg1.flags & HINT_PTAWRITE) ?
+										HINT_WRITE : 0);
+					pdptr++;
 				}
 			}
 		}
@@ -572,6 +607,11 @@ extern int prio_kernel;
 // kernel executions.
 // TODO: Maybe we should allow multiple loadings to happen
 // simultaneously if we know the amount of free memory is enough.
+// TODO: The logic of handling dptr arrays:
+// TODO: Make special flag for region at allocation time. A dptr array region
+// is only modified by the host, and kernel only reads it.
+// Each dparray region has a special host buffer dpa, that is transferred to
+// real dptrs before EVERY usage and synced to device memory.
 cudaError_t gmm_cudaLaunch(const char *entry)
 {
 	cudaError_t ret = cudaSuccess;
@@ -607,17 +647,44 @@ reload:
 		goto finish;
 	}
 
-	// Process RW hints.
-	/// XXX: What if the launch below failed? Partial modification?
+	// Process WRITE hints and transfer the real dptrs to device
+	// memory for dptr arrays.
+	// XXX: What if the launch below failed? Partial modification?
 	for (i = 0; i < nrgns; i++) {
 		if (rgns[i]->rwhint.flags & HINT_WRITE) {
 			region_inval(rgns[i], 1);
 			region_valid(rgns[i], 0);
 		}
-	}
 
-	// Replace ptarray with real dev pointers
-	// TODO: after the kernel finishes, we have to restore their swp pointers
+		// By this moment, all regions pointed by each dptr array has
+		// been loaded and pinned to device memory.
+		if (rgns[i]->flags & HINT_PTARRAY) {
+			void **pdptr = (void **)(rgns[i]->pta_addr);
+			void **pend = (void **)(rgns[i]->pta_addr + rgns[i]->size);
+			unsigned long off = 0;
+			int j;
+
+			while (pdptr < pend) {
+				struct region *r = region_lookup(pcontext, *pdptr);
+				if (!r) {
+					GMM_DPRINT("warning: cannot find region for dptr " \
+							"%p (%d)\n", *pdptr, i);
+					off += sizeof(void *);
+					pdptr++;
+					continue;
+				}
+				*(void **)(rgns[i]->swp_addr + off) = r->dev_addr +
+						(unsigned long)(*pdptr - r->swp_addr);
+				off += sizeof(void *);
+				pdptr++;
+			}
+
+			region_valid(rgns[i], 1);
+			region_inval(rgns[i], 0);
+			for (j = 0; j < NRBLOCKS(rgns[i]->size); j++)
+				block_sync(rgns[i], j);
+		}
+	}
 
 	// Push all kernel arguments.
 	for (i = 0; i < nargs; i++) {
@@ -722,6 +789,8 @@ re_acquire:
 	list_alloced_del(pcontext, r);
 	if (r->blocks)
 		free(r->blocks);
+	if (r->pta_addr)
+		free(r->pta_addr);
 	if (r->swp_addr)
 		free(r->swp_addr);
 	if (r->dev_addr) {
@@ -773,6 +842,11 @@ static int gmm_memcpy_htod(void *dst, const void *src, unsigned long size)
 // Sync the host and device copies of a data block.
 // The direction of sync is determined by current valid flags. Data are synced
 // from the valid copy to the invalid copy.
+// NOTE:
+// Block syncing has to ensure data consistency: a block being modified in a
+// kernel cannot be synced from host to device or vice versa until the kernel
+// finishes; a block being read in a kernel cannot be synced from host to
+// device until the kernel finishes.
 static void block_sync(struct region *r, int block)
 {
 	int dvalid = r->blocks[block].dev_valid;
@@ -803,6 +877,7 @@ static void block_sync(struct region *r, int block)
 	}
 	else {
 		// Sync from host swap buffer to device
+		while (region_pinned(r) > 0) ;
 		gmm_memcpy_htod(r->dev_addr + off, r->swp_addr + off, size);
 		r->blocks[block].dev_valid = 1;
 	}
@@ -951,6 +1026,21 @@ static void gmm_htod_block(
 }
 #endif
 
+// Device pointer array regions are special. Their host swap buffers and
+// device memory buffers are temporary, and are only meaningful right before
+// and during a kernel execution. The opaque dptr values are stored in
+// pta_addr, and are modified by the host program only.
+static int gmm_htod_pta(
+		struct region *r,
+		void *dst,
+		const void *src,
+		size_t count)
+{
+	unsigned long off = (unsigned long)(dst - r->swp_addr);
+	memcpy(r->pta_addr + off, src, count);
+	return 0;
+}
+
 // Handle a HtoD data transfer request.
 // Note: the region may enter/leave STATE_EVICTING any time.
 //
@@ -976,6 +1066,9 @@ static int gmm_htod(
 	unsigned long off, end;
 	void *s = (void *)src;
 	char *skipped;
+
+	if (r->flags & HINT_PTARRAY)
+		return gmm_htod_pta(r, dst, src, count);
 
 	off = (unsigned long)(dst - r->swp_addr);
 	end = off + count;
@@ -1050,6 +1143,9 @@ static int gmm_htod(
 	char *skipped;
 	void *s = (void *)src;
 
+	if (r->flags & HINT_PTARRAY)
+		return gmm_htod_pta(r, dst, src, count);
+
 	off = (unsigned long)(dst - r->swp_addr);
 	end = off + count;
 	ifirst = BLOCKIDX(off);
@@ -1093,6 +1189,12 @@ static int gmm_memset(struct region *r, void *dst, int value, size_t count)
 	int ifirst, ilast, iblock;
 	char *skipped;
 	void *s;
+
+	if (r->flags & HINT_PTARRAY) {
+		off = (unsigned long)(dst - r->swp_addr);
+		memset(r->pta_addr + off, value, count);
+		return 0;
+	}
 
 	// The temporary source buffer holding %value's
 	s = malloc(BLOCKSIZE);
@@ -1209,6 +1311,11 @@ static int gmm_dtoh(
 	int ifirst = BLOCKIDX(off), iblock;
 	void *d = dst;
 	char *skipped;
+
+	if (r->flags & HINT_PTARRAY) {
+		memcpy(dst, r->pta_addr + off, count);
+		return 0;
+	}
 
 	skipped = (char *)malloc(BLOCKIDX(end - 1) - ifirst + 1);
 	if (!skipped) {
@@ -1342,6 +1449,9 @@ int victim_select(
 // supposed to be accessing the region at the same time.
 // This is not true if multiple loadings happen simultaneously,
 // but this region has been locked in region_load() anyway.
+// A dptr array region's data never needs to be transferred back
+// from device to host because swp_valid=0,dev_valid=1 will never
+// happen.
 int region_evict(struct region *r)
 {
 	int nblocks = NRBLOCKS(r->size);
@@ -1599,8 +1709,9 @@ static int region_load(
 		list_attached_mov(pcontext, r);
 	}
 
-	// Fetch data to device memory if necessary.
-	if (r->rwhint.flags & HINT_READ) {
+	// Fetch data to device memory if necessary. A dptr array region will
+	// be synced later after all other referenced regions have been loaded.
+	if ((r->rwhint.flags & HINT_READ) && !(r->flags & HINT_PTARRAY)) {
 		for (i = 0; i < NRBLOCKS(r->size); i++) {
 			acquire(&r->blocks[i].lock);	// Though this is useless
 			if (!r->blocks[i].dev_valid)
@@ -1702,7 +1813,7 @@ static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 		memcpy(pcb->rgns, rgns, sizeof(void *) * nrgns);
 	for (i = 0; i < nrgns; i++) {
 		if (rgns[i]->rwhint.flags & HINT_WRITE) {
-			GMM_DPRINT("inc modifying %p (%d)\n", rgns[i], atomic_read(&(rgns[i]->modifying)));
+			//GMM_DPRINT("inc modifying %p (%d)\n", rgns[i], atomic_read(&(rgns[i]->modifying)));
 			pcb->mod[i] = 1;
 			atomic_inc(&(rgns[i]->modifying));
 		}

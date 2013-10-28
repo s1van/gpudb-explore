@@ -109,7 +109,7 @@ cudaError_t cudaMalloc(void **devPtr, size_t size)
 	cudaError_t ret;
 
 	if (initialized)
-		ret = gmm_cudaMalloc(devPtr, size);
+		ret = gmm_cudaMalloc(devPtr, size, 0);
 	else {
 		// TODO: we need to remember those device memory allocated
 		// before GMM was initialized, so that later when they are
@@ -122,15 +122,15 @@ cudaError_t cudaMalloc(void **devPtr, size_t size)
 	return ret;
 }
 
-// GMM-specific: allowing passing read/write hints.
-//GMM_EXPORT
-//cudaError_t cudaMallocEx(void **devPtr, size_t size, int flags)
-//{
-//	if (initialized)
-//		return gmm_cudaMalloc(devPtr, size, flags);
-//	else
-//		return cudaErrorInitializationError;
-//}
+// GMM-specific: allowing passing dptr array hints.
+GMM_EXPORT
+cudaError_t cudaMallocEx(void **devPtr, size_t size, int flags)
+{
+	if (initialized)
+		return gmm_cudaMalloc(devPtr, size, flags);
+	else
+		return cudaErrorInitializationError;
+}
 
 GMM_EXPORT
 cudaError_t cudaFree(void *devPtr)

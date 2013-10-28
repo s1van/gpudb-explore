@@ -43,12 +43,14 @@ struct region {
 	long size;				// size of the object in bytes
 	void *dev_addr;			// device memory address
 	void *swp_addr;			// host swap buffer address
+	void *pta_addr;			// dptr array address
 	struct block *blocks;	// device memory blocks
 	struct spinlock lock;	// the lock that protects memory object state
 	region_state_t state;	// state of the object
 	atomic_t pinned;		// atomic pin counter
 	atomic_t modifying;		// being modified by how many kernels
 
+	int flags;
 	struct rwhint rwhint;	// rw hint
 
 	struct list_head entry_alloced;		// linked to the list of allocated
@@ -170,7 +172,7 @@ static inline int is_included(void **a, int n, void *p)
 int gmm_context_init();
 void gmm_context_fini();
 
-cudaError_t gmm_cudaMalloc(void **devPtr, size_t size);
+cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags);
 cudaError_t gmm_cudaFree(void *devPtr);
 cudaError_t gmm_cudaSetupArgument(
 		const void *arg,
