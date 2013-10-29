@@ -218,7 +218,7 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags)
 			free(r);
 			return cudaErrorMemoryAllocation;
 		}
-		GMM_DPRINT("pta_addr (%p) alloced for %p\n", r->pta_addr, r);
+		//GMM_DPRINT("pta_addr (%p) alloced for %p\n", r->pta_addr, r);
 	}
 
 	nblocks = NRBLOCKS(size);
@@ -738,7 +738,7 @@ cudaError_t gmm_cudaMemset(void *devPtr, int value, size_t count)
 {
 	struct region *r;
 
-	GMM_DPRINT("gmm_cudaMemset: %p %d %lu\n", devPtr, value, count);
+	//GMM_DPRINT("gmm_cudaMemset: %p %d %lu\n", devPtr, value, count);
 
 	if (count <= 0)
 		return cudaErrorInvalidValue;
@@ -1831,7 +1831,7 @@ void CUDART_CB gmm_kernel_callback(
 {
 	struct kcb *pcb = (struct kcb *)data;
 	int i;
-	GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
+	//GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
 	for (i = 0; i < pcb->nrgns; i++) {
 		if (pcb->flags[i] & HINT_WRITE)
 			atomic_dec(&(pcb->rgns[i]->writing));
@@ -1882,6 +1882,6 @@ static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 	}
 	nv_cudaStreamAddCallback(stream_issue, gmm_kernel_callback, (void *)pcb, 0);
 
-	GMM_DPRINT("kernel launched\n");
+	//GMM_DPRINT("kernel launched\n");
 	return 0;
 }

@@ -96,10 +96,11 @@ __attribute__((destructor))
 void gmm_fini(void)
 {
 	if (initialized) {
-		client_detach();
+		// NOTE: gmm_context_fini has to happen before client_detach
+		// because garbage collections will need to update global info.
 		gmm_context_fini();
+		client_detach();
 		initialized = 0;
-		//GMM_DPRINT("gmm finished\n");
 	}
 }
 

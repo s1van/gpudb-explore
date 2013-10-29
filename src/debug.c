@@ -18,9 +18,11 @@ void gmm_print_region(void *rgn)
 
 	GMM_DPRINT("printing dptr %p (%p)\n", r->swp_addr, r);
 	GMM_DPRINT("\tsize: %ld\t\tstate: %d\n", r->size, r->state);
-	GMM_DPRINT("\tdev_addr: %p\t\tswp_addr: %p\n", r->dev_addr, r->swp_addr);
-	GMM_DPRINT("\tpinned: %d\t\trwhint: %x\n", atomic_read(&r->pinned), \
-			(unsigned int)(r->rwhint.flags));
+	GMM_DPRINT("\tdev_addr: %p\t\tswp_addr: %p\t\tpta_addr: %p\n", \
+			r->dev_addr, r->swp_addr, r->pta_addr);
+	GMM_DPRINT("\tpinned: %d\t\twriting: %d\t\treading: %d\n", \
+			atomic_read(&r->pinned), atomic_read(&r->writing), \
+			atomic_read(&r->reading));
 }
 
 // Print info of the region containing %dptr
