@@ -8,7 +8,7 @@
 #define HINT_MASK		(HINT_READ | HINT_WRITE)
 
 // Device pointer array flags
-#define HINT_PTRARRAY	4	// to be deleted
+//#define HINT_PTRARRAY	4	// to be deleted
 #define HINT_PTARRAY	4
 #define HINT_PTAREAD	8
 #define HINT_PTAWRITE	16
