@@ -820,9 +820,13 @@ re_acquire:
 // TODO: use host pinned buffer.
 static int gmm_memcpy_dtoh(void *dst, const void *src, unsigned long size)
 {
-	if (nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyDeviceToHost,
-			pcontext->stream_dma) != cudaSuccess) {
-		GMM_DPRINT("DtoH (%lu, %p => %p) failed\n", size, src, dst);
+	cudaError_t error;
+
+	// TODO: this function may return error from previous kernel launches
+	if ((error = nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyDeviceToHost,
+			pcontext->stream_dma)) != cudaSuccess) {
+		GMM_DPRINT("DtoH (%lu, %p => %p) failed: %s\n", \
+				size, src, dst, cudaGetErrorString(error));
 		return -1;
 	}
 
