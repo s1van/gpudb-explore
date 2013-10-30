@@ -7,7 +7,7 @@
 #define GMM_EXPORT __attribute__((__visibility__("default")))
 
 #ifdef GMM_DEBUG
-#define GMM_DPRINT(fmt, arg...) fprintf(stderr, "[gmm:debug] " fmt, ##arg)
+#define GMM_DPRINT(fmt, arg...) fprintf(stderr, "[gmm:debug] (%d) " fmt, getpid(), ##arg)
 #else
 #define GMM_DPRINT(fmt, arg...)
 #endif

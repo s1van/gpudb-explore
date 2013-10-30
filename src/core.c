@@ -768,6 +768,8 @@ cudaError_t gmm_cudaMemset(void *devPtr, int value, size_t count)
 // immediately freed. 0 - not freed yet; 1 - freed.
 static int gmm_free(struct region *r)
 {
+	//GMM_DPRINT("gmm_free %p %ld\n", r, r->size);
+
 	// First, properly inspect/set region state.
 re_acquire:
 	acquire(&r->lock);
@@ -820,14 +822,13 @@ re_acquire:
 // TODO: use host pinned buffer.
 static int gmm_memcpy_dtoh(void *dst, const void *src, unsigned long size)
 {
-	cudaError_t error;
+	cudaError_t error = cudaGetLastError();	// Reset last error to cudaSuccess
 
-	// TODO: this function may return error from previous kernel launches
 	if ((error = nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyDeviceToHost,
 			pcontext->stream_dma)) != cudaSuccess) {
 		GMM_DPRINT("DtoH (%lu, %p => %p) failed: %s\n", \
 				size, src, dst, cudaGetErrorString(error));
-		return -1;
+		//return -1;
 	}
 
 	if (nv_cudaStreamSynchronize(pcontext->stream_dma) != cudaSuccess) {
@@ -842,10 +843,13 @@ static int gmm_memcpy_dtoh(void *dst, const void *src, unsigned long size)
 // TODO: use host pinned buffer.
 static int gmm_memcpy_htod(void *dst, const void *src, unsigned long size)
 {
-	if (nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyHostToDevice,
-			pcontext->stream_dma) != cudaSuccess) {
-		GMM_DPRINT("DtoH (%lu, %p => %p) failed\n", size, src, dst);
-		return -1;
+	cudaError_t error = cudaGetLastError();	// Reset last error to cudaSuccess
+
+	if ((error = nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyHostToDevice,
+			pcontext->stream_dma)) != cudaSuccess) {
+		GMM_DPRINT("DtoH (%lu, %p => %p) failed: %s\n", \
+				size, src, dst, cudaGetErrorString(error));
+		//return -1;
 	}
 
 	if (nv_cudaStreamSynchronize(pcontext->stream_dma) != cudaSuccess) {
@@ -1512,7 +1516,7 @@ int region_evict(struct region *r)
 	char *skipped;
 	int i;
 
-	//GMM_DPRINT("evicting region %p\n", r);
+	GMM_DPRINT("evicting region %p\n", r);
 	//gmm_print_region(r);
 
 	if (!r->dev_addr)
@@ -1835,7 +1839,7 @@ void CUDART_CB gmm_kernel_callback(
 {
 	struct kcb *pcb = (struct kcb *)data;
 	int i;
-	//GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
+	GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
 	for (i = 0; i < pcb->nrgns; i++) {
 		if (pcb->flags[i] & HINT_WRITE)
 			atomic_dec(&(pcb->rgns[i]->writing));
@@ -1886,6 +1890,6 @@ static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 	}
 	nv_cudaStreamAddCallback(stream_issue, gmm_kernel_callback, (void *)pcb, 0);
 
-	//GMM_DPRINT("kernel launched\n");
+	GMM_DPRINT("kernel launched\n");
 	return 0;
 }
