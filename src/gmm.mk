@@ -1,6 +1,6 @@
 # Printing flags
 USE_PRINT_BUFFER = 0
-PRINT_LEVEL = 4
+PRINT_LEVEL = 3
 
 GMM_CONFIGS :=
 

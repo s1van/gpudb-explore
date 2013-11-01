@@ -1212,12 +1212,12 @@ static int gmm_htod(
 {
 	unsigned long off, end, size;
 	int ifirst, ilast, iblock;
-	char *skipped;
 	void *s = (void *)src;
+	char *skipped;
 	int ret = 0;
 
-	gprint(DEBUG, "htod: r(%p %p %ld) dst(%p) src(%p) count(%lu)\n", \
-			r, r->swp_addr, r->size, dst, src, count);
+	gprint(DEBUG, "htod: r(%p %p %ld %d %d) dst(%p) src(%p) count(%lu)\n", \
+			r, r->swp_addr, r->size, r->flags, r->state, dst, src, count);
 
 	if (r->flags & HINT_PTARRAY)
 		return gmm_htod_pta(r, dst, src, count);
@@ -1531,15 +1531,12 @@ struct region *region_lookup(struct gmm_context *ctx, const void *ptr)
 	struct list_head *pos;
 	int found = 0;
 
-	//GMM_DPRINT("region_lookup begin: %p\n", ptr);
-
 	acquire(&ctx->lock_alloced);
-	list_for_each(pos, &(ctx->list_alloced)) {
+	list_for_each(pos, &ctx->list_alloced) {
 		r = list_entry(pos, struct region, entry_alloced);
-		//GMM_DPRINT("region_lookup: %p %ld\n", r->swp_addr, r->size);
-		if ((unsigned long)ptr >= (unsigned long)(r->swp_addr) &&
-			(unsigned long)ptr <
-			((unsigned long)(r->swp_addr) + (unsigned long)(r->size))) {
+		if (((unsigned long)ptr >= (unsigned long)(r->swp_addr)) &&
+			((unsigned long)ptr <
+			((unsigned long)(r->swp_addr) + (unsigned long)(r->size)))) {
 			found = 1;
 			break;
 		}
