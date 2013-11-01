@@ -12,11 +12,11 @@
 
 // State of a device memory region
 typedef enum region_state {
-	STATE_ATTACHED = 0,		// object allocated with device memory
-	STATE_DETACHED,			// object not attached with device memory
+	STATE_DETACHED = 0,		// object not allocated with device memory
+	STATE_ATTACHED,			// object allocated with device memory
 	STATE_FREEING,			// object being freed
 	STATE_EVICTING,			// object being evicted
-	STATE_EVICTED
+	STATE_ZOMBIE			// object waiting to be GC'ed
 } region_state_t;
 
 // RW hint passed to a device memory region.
@@ -65,7 +65,7 @@ struct region {
 struct dptr_arg {
 	struct region *r;		// the region this argument points to
 	unsigned long off;		// device pointer offset in the region
-	int flags;
+	int flags;				// RW hints
 	void *dptr;				// the actual device memory address
 };
 
@@ -117,13 +117,12 @@ struct victim {
 #define BLOCKSHIFT			22
 #define BLOCKMASK			(~(BLOCKSIZE - 1))
 
+// Could use BLOCKSHIFT, but it has little impact to system performance.
 #define NRBLOCKS(size)		(((size) + BLOCKSIZE - 1) / BLOCKSIZE)
-#define BLOCKIDX(offset)	((unsigned long)(offset) / BLOCKSIZE)
-#define BLOCKUP(offset)		((offset + BLOCKSIZE) / BLOCKSIZE * BLOCKSIZE)
+#define BLOCKIDX(offset)	(((unsigned long)(offset)) / BLOCKSIZE)
+#define BLOCKUP(offset)		((((offset) + BLOCKSIZE) / BLOCKSIZE) * BLOCKSIZE)
 
-// TODO: for region_pin, change client's size_detachable if pinned first;
-// for region_unpin, change client's size_detachable if unpiined last.
-#define region_pinned(r)	atomic_read(&(r)->pinned)
+#define region_pinned(r)	atomic_read(&((r)->pinned))
 
 
 // Invalidate all blocks in a region.

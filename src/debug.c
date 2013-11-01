@@ -16,26 +16,25 @@ void gmm_print_region(void *rgn)
 {
 	struct region *r = (struct region *)rgn;
 
-	GMM_DPRINT("printing dptr %p (%p)\n", r->swp_addr, r);
-	GMM_DPRINT("\tsize: %ld\t\tstate: %d\n", r->size, r->state);
-	GMM_DPRINT("\tdev_addr: %p\t\tswp_addr: %p\t\tpta_addr: %p\n", \
+	gprint(DEBUG, "printing dptr %p (%p)\n", r->swp_addr, r);
+	gprint(DEBUG, "\tsize: %ld\t\tstate: %d\t\tflags: %d\n", \
+			r->size, r->state, r->flags);
+	gprint(DEBUG, "\tdev_addr: %p\t\tswp_addr: %p\t\tpta_addr: %p\n", \
 			r->dev_addr, r->swp_addr, r->pta_addr);
-	GMM_DPRINT("\tpinned: %d\t\twriting: %d\t\treading: %d\n", \
+	gprint(DEBUG, "\tpinned: %d\t\twriting: %d\t\treading: %d\n", \
 			atomic_read(&r->pinned), atomic_read(&r->writing), \
 			atomic_read(&r->reading));
 }
 
 // Print info of the region containing %dptr
-#ifdef GMM_DEBUG
 GMM_EXPORT
-#endif
 void gmm_print_dptr(const void *dptr)
 {
 	struct region *r;
 
 	r = region_lookup(pcontext, dptr);
 	if (!r) {
-		GMM_DPRINT("failed to look up region containing %p\n", dptr);
+		gprint(DEBUG, "failed to look up region containing %p\n", dptr);
 		return;
 	}
 	gmm_print_region(r);

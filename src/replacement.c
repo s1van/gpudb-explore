@@ -25,7 +25,7 @@ int victim_select_lru_local(
 
 	v = (struct victim *)malloc(sizeof(*v));
 	if (!v) {
-		GMM_DPRINT("malloc failed for a new victim: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for a new victim: %s\n", strerror(errno));
 		return -1;
 	}
 	v->client = -1;
@@ -49,11 +49,12 @@ int victim_select_lru_local(
 	release(&pcontext->lock_attached);
 
 	if (pos == &pcontext->list_attached) {
-		//GMM_DPRINT("no victim selected\n");
+		gprint(DEBUG, "no local victim selected\n");
 		free(v);
 		return 1;	// XXX: this can be problematic
 	}
-	//GMM_DPRINT("victim selected\n");
+	gprint(DEBUG, "victim selected r(%p %p %ld %d %d)\n", \
+			r, r->swp_addr, r->size, r->flags, r->state);
 
 	return 0;
 }
@@ -70,6 +71,8 @@ int victim_select_lru(
 	struct victim *v;
 	int iclient;
 
+	gprint(DEBUG, "selecting victim for %ld bytes\n", size_needed);
+
 	if (!local_only) {
 		iclient = client_lru_detachable();
 		if (iclient == -1)
@@ -81,13 +84,15 @@ int victim_select_lru(
 	if (!local_only && !is_client_local(iclient)) {
 		v = (struct victim *)malloc(sizeof(*v));
 		if (!v) {
-			GMM_DPRINT("malloc failed for a new victim: %s\n", strerror(errno));
+			gprint(FATAL, "malloc failed for a new victim: %s\n", \
+					strerror(errno));
 			client_unpin(iclient);
 			return -1;
 		}
 		v->r = NULL;
 		v->client = iclient;
 		list_add(&v->entry, victims);
+		gprint(DEBUG, "remote victim selected from client %d\n", iclient);
 		return 0;
 	}
 	else

@@ -6,17 +6,54 @@
 
 #define GMM_EXPORT __attribute__((__visibility__("default")))
 
-#ifdef GMM_DEBUG
-#define GMM_DPRINT(fmt, arg...) fprintf(stderr, "[gmm:debug] (%d) " fmt, getpid(), ##arg)
-#else
-#define GMM_DPRINT(fmt, arg...)
+#define FATAL	0
+#define ERROR	1
+#define WARN	2
+#define INFO	3
+#define DEBUG	4
+#define PRINT_LEVELS	5
+
+#ifndef GMM_PRINT_LEVEL
+#define GMM_PRINT_LEVEL		FATAL
 #endif
 
-#ifdef GMM_PROFILE
-#define GMM_PRINT(fmt, arg...) fprintf(stderr, "[gmm:profile] " fmt, ##arg)
+extern char *GMM_PRINT_MSG[];
+
+#ifdef GMM_PRINT_BUFFER
+#include <sys/time.h>
+#include "spinlock.h"
+
+extern char *gprint_buffer;
+extern int gprint_lines;
+extern int gprint_head;
+extern struct spinlock gprint_lock;
+
+#define gprint(lvl, fmt, arg...) \
+	do { \
+		if (lvl <= GMM_PRINT_LEVEL) { \
+			int len; \
+			struct timeval t; \
+			gettimeofday(&t, NULL); \
+			acquire(&gprint_lock); \
+			len = sprintf(gprint_buffer + gprint_head, \
+					"[%d %s] %lf " fmt, getpid(), GMM_PRINT_MSG[lvl], \
+					((double)(t.tv_sec) + t.tv_usec / 1000000.0), ##arg); \
+			gprint_lines++; \
+			gprint_head += len + 1; \
+			release(&gprint_lock); \
+		} \
+	} while (0)
 #else
-#define GMM_PRINT(fmt, arg...)
+#define gprint(lvl, fmt, arg...) \
+		do { \
+			if (lvl <= GMM_PRINT_LEVEL) { \
+				printf("[%d %s] " fmt, getpid(), GMM_PRINT_MSG[lvl], ##arg); \
+			} \
+		} while (0)
 #endif
+
+void gprint_init();
+void gprint_fini();
 
 #ifndef gettid
 #define _GNU_SOURCE

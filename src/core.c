@@ -54,7 +54,7 @@ static int gmm_memset(struct region *r, void *dst, int value, size_t count);
 static int gmm_load(struct region **rgns, int nrgns);
 static int gmm_launch(const char *entry, struct region **rgns, int nrgns);
 struct region *region_lookup(struct gmm_context *ctx, const void *ptr);
-static void block_sync(struct region *r, int block);
+static int block_sync(struct region *r, int block);
 
 
 // The GMM context for this process
@@ -115,13 +115,13 @@ static inline void region_unpin(struct region *r)
 int gmm_context_init()
 {
 	if (pcontext != NULL) {
-		GMM_DPRINT("pcontext already exists!\n");
+		gprint(FATAL, "pcontext already exists!\n");
 		return -1;
 	}
 
 	pcontext = (struct gmm_context *)malloc(sizeof(*pcontext));
 	if (!pcontext) {
-		GMM_DPRINT("failed to malloc for pcontext: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for pcontext: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -133,14 +133,14 @@ int gmm_context_init()
 	initlock(&pcontext->lock_attached);
 
 	if (nv_cudaStreamCreate(&pcontext->stream_dma) != cudaSuccess) {
-		GMM_DPRINT("failed to create DMA stream\n");
+		gprint(FATAL, "failed to create DMA stream\n");
 		free(pcontext);
 		pcontext = NULL;
 		return -1;
 	}
 
 	if (nv_cudaStreamCreate(&pcontext->stream_kernel) != cudaSuccess) {
-		GMM_DPRINT("failed to create kernel stream\n");
+		gprint(FATAL, "failed to create kernel stream\n");
 		nv_cudaStreamDestroy(pcontext->stream_dma);
 		free(pcontext);
 		pcontext = NULL;
@@ -178,53 +178,53 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags)
 	struct region *r;
 	int nblocks;
 
-	//GMM_DPRINT("cudaMalloc begin: %lu\n", size);
+	gprint(DEBUG, "cudaMalloc begins: size(%lu) flags(%x)\n", size, flags);
 
 	if (size > memsize_total()) {
-		GMM_DPRINT("cudaMalloc size (%lu) too large (max %ld)\n", \
+		gprint(ERROR, "cudaMalloc size (%lu) too large (max %ld)\n", \
 				size, memsize_total());
 		return cudaErrorInvalidValue;
 	}
 	else if (size <= 0) {
-		GMM_DPRINT("cudaMalloc size (%lu) too small\n", size);
+		gprint(ERROR, "cudaMalloc size (%lu) too small\n", size);
 		return cudaErrorInvalidValue;
 	}
 
-	r = (struct region *)malloc(sizeof(*r));
+	r = (struct region *)calloc(1, sizeof(*r));
 	if (!r) {
-		GMM_DPRINT("malloc for a new region: %s\n", strerror(errno));
+		gprint(FATAL, "malloc for a new region: %s\n", strerror(errno));
 		return cudaErrorMemoryAllocation;
 	}
-	memset(r, 0, sizeof(*r));
 
 	r->swp_addr = malloc(size);
 	if (!r->swp_addr) {
-		GMM_DPRINT("malloc failed for host swap buffer: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for swap buffer: %s\n", strerror(errno));
 		free(r);
 		return cudaErrorMemoryAllocation;
 	}
 
 	if (flags & HINT_PTARRAY) {
 		if (size % sizeof(void *)) {
-			GMM_DPRINT("dptr array size (%lu) not aligned\n", size);
+			gprint(ERROR, "dptr array size (%lu) not aligned\n", size);
 			free(r->swp_addr);
 			free(r);
 			return cudaErrorInvalidValue;
 		}
 		r->pta_addr = calloc(1, size);
 		if (!r->pta_addr) {
-			GMM_DPRINT("malloc failed for dptr array: %s\n", strerror(errno));
+			gprint(FATAL, "malloc failed for dptr array: %s\n", \
+					strerror(errno));
 			free(r->swp_addr);
 			free(r);
 			return cudaErrorMemoryAllocation;
 		}
-		//GMM_DPRINT("pta_addr (%p) alloced for %p\n", r->pta_addr, r);
+		gprint(DEBUG, "pta_addr (%p) alloced for %p\n", r->pta_addr, r);
 	}
 
 	nblocks = NRBLOCKS(size);
 	r->blocks = (struct block *)calloc(nblocks, sizeof(struct block));
 	if (!r->blocks) {
-		GMM_DPRINT("malloc failed for blocks array: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for blocks array: %s\n", strerror(errno));
 		if (r->pta_addr)
 			free(r->pta_addr);
 		free(r->swp_addr);
@@ -232,18 +232,19 @@ cudaError_t gmm_cudaMalloc(void **devPtr, size_t size, int flags)
 		return cudaErrorMemoryAllocation;
 	}
 
-	// TODO: test how CUDA runtime aligns the size of device memory allocations
+	// TODO: test how CUDA runtime aligns the size of memory allocations
 	r->size = (long)size;
-	initlock(&r->lock);
+	//initlock(&r->lock);
 	r->state = STATE_DETACHED;
-	atomic_set(&r->pinned, 0);
+	//atomic_set(&r->pinned, 0);
 	r->flags = flags;
-	r->rwhint.flags = HINT_DEFAULT;
-
-	//GMM_DPRINT("cudaMalloc: %p %lu\n", r->swp_addr, size);
+	//r->rwhint.flags = HINT_DEFAULT;
 
 	list_alloced_add(pcontext, r);
 	*devPtr = r->swp_addr;
+
+	gprint(DEBUG, "cudaMalloc ends: r(%p) swp(%p) pta(%p)\n", \
+			r, r->swp_addr, r->pta_addr);
 	return cudaSuccess;
 }
 
@@ -252,11 +253,9 @@ cudaError_t gmm_cudaFree(void *devPtr)
 	struct region *r;
 
 	if (!(r = region_lookup(pcontext, devPtr))) {
-		GMM_DPRINT("cannot find region containing %p in cudaFree\n", devPtr);
+		gprint(ERROR, "cannot find region containing %p in cudaFree\n", devPtr);
 		return cudaErrorInvalidDevicePointer;
 	}
-
-	//GMM_DPRINT("cudaFree: %p\n", r->swp_addr);
 
 	if (gmm_free(r) < 0)
 		return cudaErrorUnknown;
@@ -264,9 +263,6 @@ cudaError_t gmm_cudaFree(void *devPtr)
 		return cudaSuccess;
 }
 
-// TODO: htod and dtoh operations have to consider whether the region is
-// being accessed by a kernel. For example, if the region is being modified
-// by a kernel, it is not correct to read a block that is being modified.
 cudaError_t gmm_cudaMemcpyHtoD(
 		void *dst,
 		const void *src,
@@ -274,22 +270,20 @@ cudaError_t gmm_cudaMemcpyHtoD(
 {
 	struct region *r;
 
-	//GMM_DPRINT("gmm_cudaMemcpyHtoD called\n");
-
 	if (count <= 0)
 		return cudaErrorInvalidValue;
 
 	r = region_lookup(pcontext, dst);
 	if (!r) {
-		GMM_DPRINT("cannot find region containing %p\n", dst);
+		gprint(ERROR, "cannot find region containing %p in htod\n", dst);
 		return cudaErrorInvalidDevicePointer;
 	}
-	if (r->state == STATE_FREEING) {
-		GMM_DPRINT("region already freed\n");
+	if (r->state == STATE_FREEING || r->state == STATE_ZOMBIE) {
+		gprint(ERROR, "region already freed\n");
 		return cudaErrorInvalidValue;
 	}
 	if (dst + count > r->swp_addr + r->size) {
-		GMM_DPRINT("htod memory copy out of region boundary\n");
+		gprint(ERROR, "htod out of region boundary\n");
 		return cudaErrorInvalidValue;
 	}
 
@@ -306,22 +300,20 @@ cudaError_t gmm_cudaMemcpyDtoH(
 {
 	struct region *r;
 
-	//GMM_DPRINT("gmm_cudaMemcpyDtoH called\n");
-
 	if (count <= 0)
 		return cudaErrorInvalidValue;
 
 	r = region_lookup(pcontext, src);
 	if (!r) {
-		GMM_DPRINT("cannot find device memory region containing %p\n", src);
+		gprint(ERROR, "cannot find region containing %p in dtoh\n", src);
 		return cudaErrorInvalidDevicePointer;
 	}
-	if (r->state == STATE_FREEING) {
-		GMM_DPRINT("region already freed\n");
+	if (r->state == STATE_FREEING || r->state == STATE_ZOMBIE) {
+		gprint(ERROR, "region already freed\n");
 		return cudaErrorInvalidValue;
 	}
 	if (src + count > r->swp_addr + r->size) {
-		GMM_DPRINT("dtoh device memory access out of boundary\n");
+		gprint(ERROR, "dtoh out of region boundary\n");
 		return cudaErrorInvalidValue;
 	}
 
@@ -338,36 +330,34 @@ cudaError_t gmm_cudaMemcpyDtoD(
 {
 	struct region *rs, *rd;
 
-	//GMM_DPRINT("gmm_cudaMemcpyDtoD called\n");
-
 	if (count <= 0)
 		return cudaErrorInvalidValue;
 
 	rs = region_lookup(pcontext, src);
 	if (!rs) {
-		GMM_DPRINT("cannot find src region containing %p\n", src);
+		gprint(ERROR, "cannot find src region containing %p in dtod\n", src);
 		return cudaErrorInvalidDevicePointer;
 	}
-	if (rs->state == STATE_FREEING) {
-		GMM_DPRINT("source region already freed\n");
+	if (rs->state == STATE_FREEING || rs->state == STATE_ZOMBIE) {
+		gprint(ERROR, "src region already freed\n");
 		return cudaErrorInvalidValue;
 	}
 	if (src + count > rs->swp_addr + rs->size) {
-		GMM_DPRINT("dtod device memory access out of boundary\n");
+		gprint(ERROR, "dtod out of src boundary\n");
 		return cudaErrorInvalidValue;
 	}
 
 	rd = region_lookup(pcontext, dst);
 	if (!rd) {
-		GMM_DPRINT("cannot find dst region containing %p\n", dst);
+		gprint(ERROR, "cannot find dst region containing %p in dtod\n", dst);
 		return cudaErrorInvalidDevicePointer;
 	}
-	if (rd->state == STATE_FREEING) {
-		GMM_DPRINT("destination region already freed\n");
+	if (rd->state == STATE_FREEING || rd->state == STATE_ZOMBIE) {
+		gprint(ERROR, "dst region already freed\n");
 		return cudaErrorInvalidValue;
 	}
 	if (dst + count > rd->swp_addr + rd->size) {
-		GMM_DPRINT("dtod device memory access out of boundary\n");
+		gprint(ERROR, "dtod out of dst boundary\n");
 		return cudaErrorInvalidValue;
 	}
 
@@ -381,9 +371,23 @@ cudaError_t gmm_cudaMemGetInfo(size_t *free, size_t *total)
 {
 	*free = (size_t)memsize_free();
 	*total = (size_t)memsize_total();
-	//GMM_DPRINT("gmm_cudaMemGetInfo: %lu %lu\n", *free, *total);
+	gprint(DEBUG, "cudaMemGetInfo: free(%lu) total(%lu)\n", *free, *total);
 	return cudaSuccess;
 }
+
+// Reference hints passed for a kernel launch.
+// Set by cudaReference() in interfaces.c.
+// TODO: have to reset nrefs in case of errors before cudaLaunch.
+extern int refs[NREFS];
+extern int rwflags[NREFS];
+extern int nrefs;
+
+// The arguments for the following kernel to be launched.
+// TODO: should prepare the following structures for each stream.
+static unsigned char kstack[512];		// Temporary kernel argument stack
+static void *ktop = (void *)kstack;		// Stack top
+static struct karg kargs[NREFS];
+static int nargs = 0;
 
 // Which stream is the upcoming kernel to be issued to?
 static cudaStream_t stream_issue = 0;
@@ -402,31 +406,22 @@ cudaError_t gmm_cudaConfigureCall(
 		size_t sharedMem,
 		cudaStream_t stream)
 {
-	//GMM_DPRINT("gmm_cudaConfigureCall: %d %d\n", gridDim.x, blockDim.x);
+	gprint(DEBUG, "cudaConfigureCall: %d %d %lu\n", \
+			gridDim.x, blockDim.x, sharedMem);
+	nargs = 0;
+	ktop = (void *)kstack;
 	stream_issue = pcontext->stream_kernel;
 	return nv_cudaConfigureCall(gridDim, blockDim, sharedMem, stream_issue);
 }
-
-// Reference hints passed for a kernel launch. Set by
-// cudaReference in interfaces.c.
-extern int refs[NREFS];
-extern int rwflags[NREFS];
-extern int nrefs;
-
-// The arguments for the following kernel to be launched.
-// TODO: should prepare the following structures for each stream.
-static struct karg kargs[NREFS];
-static int nargs = 0;
 
 // CUDA pushes kernel arguments from left to right. For example, for a kernel
 //				k(a, b, c)
 // , a will be pushed on top of the stack, followed by b, and finally c.
 // %offset gives the actual offset of an argument in the call stack,
-// rather than which argument is being pushed.
-// Let's assume %arg is still there when we pushing the arguments after
-// postponing argument setup until cudaLaunch is called. If the CUDA runtime
-// frees the temporary argument array before cudaLaunch, this will cause
-// segmentation fault.
+// rather than which argument is being pushed. %size is the size of the
+// argument being pushed. Note that argument offset will be aligned based
+// on the type of argument (e.g., a (void *)-type argument's offset has to
+// be aligned to sizeof(void *)).
 cudaError_t gmm_cudaSetupArgument(
 		const void *arg,
 		size_t size,
@@ -436,7 +431,8 @@ cudaError_t gmm_cudaSetupArgument(
 	int is_dptr = 0;
 	int i = 0;
 
-	//GMM_DPRINT("gmm_cudaSetupArgument: %p %lu %lu\n", arg, size, offset);
+	gprint(DEBUG, "cudaSetupArgument: nargs(%d) size(%lu) offset(%lu)\n", \
+			nargs, size, offset);
 
 	// Test whether this argument is a device memory pointer.
 	// If it is, record it and postpone its pushing until cudaLaunch.
@@ -451,15 +447,15 @@ cudaError_t gmm_cudaSetupArgument(
 		}
 		if (i < nrefs) {
 			if (size != sizeof(void *)) {
-				GMM_DPRINT("argument size (%lu) does not match cudaReference " \
-						"%p (%d)\n", size, *(void **)arg, nargs);
+				gprint(ERROR, "argument size (%lu) does not match " \
+						"cudaReference (%d)\n", size, nargs);
 				return cudaErrorUnknown;
 				//panic("cudaSetupArgument does not match cudaReference");
 			}
 			r = region_lookup(pcontext, *(void **)arg);
 			if (!r) {
-				GMM_DPRINT("cannot find region containing %p (%d) in " \
-						"gmm_cudaSetupArgument\n", *(void **)arg, nargs);
+				gprint(ERROR, "cannot find region containing %p (%d) in " \
+						"cudaSetupArgument\n", *(void **)arg, nargs);
 				return cudaErrorUnknown;
 				//panic("region_lookup in cudaSetupArgument");
 			}
@@ -482,12 +478,16 @@ cudaError_t gmm_cudaSetupArgument(
 			kargs[nargs].arg.arg1.flags = rwflags[i];
 		else
 			kargs[nargs].arg.arg1.flags = HINT_DEFAULT | HINT_PTADEFAULT;
+		gprint(DEBUG, "argument is dptr: r(%p %p %ld %d %d)\n", \
+				r, r->swp_addr, r->size, r->flags, r->state);
 	}
 	else {
 		// This argument is not a device memory pointer.
 		// XXX: Currently we ignore the case that nv_cudaSetupArgument
 		// returns error and CUDA runtime might stop pushing arguments.
-		kargs[nargs].arg.arg2.arg = (void *)arg;
+		memcpy(ktop, arg, size);
+		kargs[nargs].arg.arg2.arg = ktop;
+		ktop += size;
 	}
 	kargs[nargs].is_dptr = is_dptr;
 	kargs[nargs].size = size;
@@ -499,7 +499,7 @@ cudaError_t gmm_cudaSetupArgument(
 
 // TODO: We should assume that all memory regions are referenced
 // if no reference hints are given.
-// I.e., if (nargs == 0) do the following; else add all regions.
+// I.e., if (nargs > 0) do the following; else add all regions.
 static long regions_referenced(struct region ***prgns, int *pnrgns)
 {
 	struct region **rgns, *r;
@@ -515,8 +515,8 @@ static long regions_referenced(struct region ***prgns, int *pnrgns)
 	// Get the upper bound of the number of unique regions.
 	for (i = 0; i < nargs; i++) {
 		if (kargs[i].is_dptr) {
-			r = kargs[i].arg.arg1.r;
 			nrgns++;
+			r = kargs[i].arg.arg1.r;
 			// Here we assume at most one level of dptr arrays
 			if (r->flags & HINT_PTARRAY)
 				nrgns += r->size / sizeof(void *);
@@ -527,7 +527,7 @@ static long regions_referenced(struct region ***prgns, int *pnrgns)
 
 	rgns = (struct region **)malloc(sizeof(*rgns) * nrgns);
 	if (!rgns) {
-		GMM_DPRINT("malloc failed for region array: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for region array: %s\n", strerror(errno));
 		return -1;
 	}
 	nrgns = 0;
@@ -540,42 +540,41 @@ static long regions_referenced(struct region ***prgns, int *pnrgns)
 				rgns[nrgns++] = r;
 				r->rwhint.flags = kargs[i].arg.arg1.flags & HINT_MASK;
 				total += r->size;
+
+				if (r->flags & HINT_PTARRAY) {
+					void **pdptr = (void **)(r->pta_addr);
+					void **pend = (void **)(r->pta_addr + r->size);
+					r->rwhint.flags &= ~HINT_WRITE;	// dptr array is read-only
+					// For each device memory pointer contained in this region
+					while (pdptr < pend) {
+						r = region_lookup(pcontext, *pdptr);
+						if (!r) {
+							gprint(WARN, "cannot find region for dptr " \
+									"%p (%d)\n", *pdptr, i);
+							pdptr++;
+							continue;
+						}
+						if (!is_included((void **)rgns, nrgns, (void*)r)) {
+							rgns[nrgns++] = r;
+							r->rwhint.flags =
+									((kargs[i].arg.arg1.flags & HINT_PTAREAD) ?
+											HINT_READ : 0) |
+									((kargs[i].arg.arg1.flags & HINT_PTAWRITE) ?
+											HINT_WRITE : 0);
+							total += r->size;
+						}
+						else
+							r->rwhint.flags |=
+									((kargs[i].arg.arg1.flags & HINT_PTAREAD) ?
+											HINT_READ : 0) |
+									((kargs[i].arg.arg1.flags & HINT_PTAWRITE) ?
+											HINT_WRITE : 0);
+						pdptr++;
+					}
+				}
 			}
 			else
 				r->rwhint.flags |= kargs[i].arg.arg1.flags & HINT_MASK;
-
-			if (r->flags & HINT_PTARRAY) {
-				void **pdptr = (void **)(r->pta_addr);
-				void **pend = (void **)(r->pta_addr + r->size);
-				r->rwhint.flags &= ~HINT_WRITE;	// dptr array cannot be written
-
-				// For each device memory pointer contained in this region
-				while (pdptr < pend) {
-					r = region_lookup(pcontext, *pdptr);
-					if (!r) {
-						GMM_DPRINT("warning: cannot find region for dptr " \
-								"%p (%d)\n", *pdptr, i);
-						pdptr++;
-						continue;
-					}
-					if (!is_included((void **)rgns, nrgns, (void*)r)) {
-						rgns[nrgns++] = r;
-						r->rwhint.flags =
-								((kargs[i].arg.arg1.flags & HINT_PTAREAD) ?
-										HINT_READ : 0) |
-								((kargs[i].arg.arg1.flags & HINT_PTAWRITE) ?
-										HINT_WRITE : 0);
-						total += r->size;
-					}
-					else
-						r->rwhint.flags |=
-								((kargs[i].arg.arg1.flags & HINT_PTAREAD) ?
-										HINT_READ : 0) |
-								((kargs[i].arg.arg1.flags & HINT_PTAWRITE) ?
-										HINT_WRITE : 0);
-					pdptr++;
-				}
-			}
 		}
 	}
 
@@ -592,7 +591,7 @@ static long regions_referenced(struct region ***prgns, int *pnrgns)
 
 // Priority of the kernel launch (defined in interfaces.c).
 // TODO: have to arrange something in global shared memory
-// to expose kernel launch priority and scheduling info.
+// to expose kernel launch scheduling info.
 extern int prio_kernel;
 
 // It is possible that multiple device pointers fall into
@@ -609,12 +608,7 @@ extern int prio_kernel;
 // first. Then the loadings of other kernels can be overlapped with
 // kernel executions.
 // TODO: Maybe we should allow multiple loadings to happen
-// simultaneously if we know the amount of free memory is enough.
-// TODO: The logic of handling dptr arrays:
-// TODO: Make special flag for region at allocation time. A dptr array region
-// is only modified by the host, and kernel only reads it.
-// Each dparray region has a special host buffer dpa, that is transferred to
-// real dptrs before EVERY usage and synced to device memory.
+// simultaneously if we know that free memory is enough.
 cudaError_t gmm_cudaLaunch(const char *entry)
 {
 	cudaError_t ret = cudaSuccess;
@@ -623,24 +617,22 @@ cudaError_t gmm_cudaLaunch(const char *entry)
 	long total = 0;
 	int i, ldret;
 
-	//GMM_DPRINT("gmm_cudaLaunch\n");
+	gprint(DEBUG, "cudaLaunch\n");
 
-	// NOTE: it is possible nrgns == 0 when regions_referenced
+	// NOTE: it is possible that nrgns == 0 when regions_referenced
 	// returns. Consider a kernel that only uses registers, for
 	// example.
 	total = regions_referenced(&rgns, &nrgns);
-	if (total < 0 || total > memsize_total()) {
-		GMM_DPRINT("kernel requires too much device memory space (%ld)\n", \
-				total);
+	if (total < 0) {
+		gprint(ERROR, "failed to get the regions to be referenced\n");
+		ret = cudaErrorUnknown;
+		goto finish;
+	}
+	else if (total > memsize_total()) {
+		gprint(ERROR, "kernel requires too much space (%ld)\n", total);
 		ret = cudaErrorInvalidConfiguration;
 		goto finish;
 	}
-
-//#ifdef GMM_DEBUG
-//	for (i = 0; i < nrgns; i++) {
-//		gmm_print_region(rgns[i]);
-//	}
-//#endif
 
 reload:
 	launch_wait();
@@ -651,13 +643,15 @@ reload:
 		goto reload;
 	}
 	else if (ldret < 0) {	// fatal load error, quit launching
-		GMM_DPRINT("load failed; quitting kernel launch\n");
+		gprint(ERROR, "load failed; quitting kernel launch\n");
 		ret = cudaErrorUnknown;
 		goto finish;
 	}
 
 	// Process WRITE hints and transfer the real dptrs to device
 	// memory for dptr arrays.
+	// By this moment, all regions pointed by each dptr array has
+	// been loaded and pinned to device memory.
 	// XXX: What if the launch below failed? Partial modification?
 	for (i = 0; i < nrgns; i++) {
 		if (rgns[i]->rwhint.flags & HINT_WRITE) {
@@ -665,8 +659,6 @@ reload:
 			region_valid(rgns[i], 0);
 		}
 
-		// By this moment, all regions pointed by each dptr array has
-		// been loaded and pinned to device memory.
 		if (rgns[i]->flags & HINT_PTARRAY) {
 			void **pdptr = (void **)(rgns[i]->pta_addr);
 			void **pend = (void **)(rgns[i]->pta_addr + rgns[i]->size);
@@ -676,7 +668,7 @@ reload:
 			while (pdptr < pend) {
 				struct region *r = region_lookup(pcontext, *pdptr);
 				if (!r) {
-					GMM_DPRINT("warning: cannot find region for dptr " \
+					gprint(WARN, "cannot find region for dptr " \
 							"%p (%d)\n", *pdptr, i);
 					off += sizeof(void *);
 					pdptr++;
@@ -690,21 +682,27 @@ reload:
 
 			region_valid(rgns[i], 1);
 			region_inval(rgns[i], 0);
-			//GMM_DPRINT("dingding\n");
-			for (j = 0; j < NRBLOCKS(rgns[i]->size); j++)
-				block_sync(rgns[i], j);
-			//GMM_DPRINT("dongdong\n");
+			for (j = 0; j < NRBLOCKS(rgns[i]->size); j++) {
+				ret = block_sync(rgns[i], j);
+				if (ret != 0) {
+					for (i = 0; i < nrgns; i++)
+						region_unpin(rgns[i]);
+					ret = cudaErrorUnknown;
+					goto finish;
+				}
+			}
 		}
 	}
 
 	// Push all kernel arguments.
+	// TODO: create temporary argument array.
 	for (i = 0; i < nargs; i++) {
 		if (kargs[i].is_dptr) {
 			kargs[i].arg.arg1.dptr =
 					kargs[i].arg.arg1.r->dev_addr + kargs[i].arg.arg1.off;
-			nv_cudaSetupArgument(&kargs[i].arg.arg1.dptr, sizeof(void *),
-					kargs[i].argoff);
-			/*GMM_DPRINT("setup %p %lu %lu\n", \
+			nv_cudaSetupArgument(&kargs[i].arg.arg1.dptr,
+					kargs[i].size, kargs[i].argoff);
+			/*gprint(DEBUG, "setup %p %lu %lu\n", \
 					&kargs[i].arg.arg1.dptr, \
 					sizeof(void *), \
 					kargs[i].arg.arg1.argoff);*/
@@ -712,7 +710,7 @@ reload:
 		else {
 			nv_cudaSetupArgument(kargs[i].arg.arg2.arg,
 					kargs[i].size, kargs[i].argoff);
-			/*GMM_DPRINT("setup %p %lu %lu\n", \
+			/*gprint(DEBUG, "setup %p %lu %lu\n", \
 					kargs[i].arg.arg2.arg, \
 					kargs[i].arg.arg2.size, \
 					kargs[i].arg.arg2.offset);*/
@@ -731,6 +729,7 @@ finish:
 		free(rgns);
 	nrefs = 0;
 	nargs = 0;
+	ktop = (void *)kstack;
 	return ret;
 }
 
@@ -738,23 +737,21 @@ cudaError_t gmm_cudaMemset(void *devPtr, int value, size_t count)
 {
 	struct region *r;
 
-	//GMM_DPRINT("gmm_cudaMemset: %p %d %lu\n", devPtr, value, count);
-
 	if (count <= 0)
 		return cudaErrorInvalidValue;
 
 	r = region_lookup(pcontext, devPtr);
 	if (!r) {
-		GMM_DPRINT("cannot find region containing %p in gmm_cudaMemset\n", \
+		gprint(ERROR, "cannot find region containing %p in cudaMemset\n", \
 				devPtr);
 		return cudaErrorInvalidDevicePointer;
 	}
-	if (r->state == STATE_FREEING) {
-		GMM_DPRINT("region already freed\n");
+	if (r->state == STATE_FREEING || r->state == STATE_ZOMBIE) {
+		gprint(ERROR, "region already freed\n");
 		return cudaErrorInvalidValue;
 	}
 	if (devPtr + count > r->swp_addr + r->size) {
-		GMM_DPRINT("cudaMemset out of region boundary\n");
+		gprint(ERROR, "cudaMemset out of region boundary\n");
 		return cudaErrorInvalidValue;
 	}
 
@@ -768,7 +765,8 @@ cudaError_t gmm_cudaMemset(void *devPtr, int value, size_t count)
 // immediately freed. 0 - not freed yet; 1 - freed.
 static int gmm_free(struct region *r)
 {
-	//GMM_DPRINT("gmm_free %p %ld\n", r, r->size);
+	gprint(DEBUG, "freeing r(%p %p %ld %d %d)\n", \
+			r, r->swp_addr, r->size, r->flags, r->state);
 
 	// First, properly inspect/set region state.
 re_acquire:
@@ -787,13 +785,14 @@ re_acquire:
 		// Tell the evictor that this region is being freed
 		r->state = STATE_FREEING;
 		release(&r->lock);
+		gprint(DEBUG, "region set freeing\n");
 		return 0;
 	case STATE_FREEING:
 		// The evictor has not seen this region being freed
 		release(&r->lock);
 		sched_yield();
 		goto re_acquire;
-	default: // STATE_DETACHED
+	default: // STATE_DETACHED or STATE_ZOMBIE
 		break;
 	}
 	release(&r->lock);
@@ -814,6 +813,7 @@ re_acquire:
 	}
 	free(r);
 
+	gprint(DEBUG, "region freed\n");
 	return 1;
 }
 
@@ -822,17 +822,17 @@ re_acquire:
 // TODO: use host pinned buffer.
 static int gmm_memcpy_dtoh(void *dst, const void *src, unsigned long size)
 {
-	cudaError_t error = cudaGetLastError();	// Reset last error to cudaSuccess
+	cudaError_t error; //= cudaGetLastError();
 
 	if ((error = nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyDeviceToHost,
 			pcontext->stream_dma)) != cudaSuccess) {
-		GMM_DPRINT("DtoH (%lu, %p => %p) failed: %s\n", \
-				size, src, dst, cudaGetErrorString(error));
-		//return -1;
+		gprint(ERROR, "DtoH (%lu, %p => %p) failed: %s (%d)\n", \
+				size, src, dst, cudaGetErrorString(error), error);
+		return -1;
 	}
 
 	if (nv_cudaStreamSynchronize(pcontext->stream_dma) != cudaSuccess) {
-		GMM_DPRINT("Sync over DMA stream failed\n");
+		gprint(ERROR, "Sync over DMA stream failed\n");
 		return -1;
 	}
 
@@ -843,17 +843,17 @@ static int gmm_memcpy_dtoh(void *dst, const void *src, unsigned long size)
 // TODO: use host pinned buffer.
 static int gmm_memcpy_htod(void *dst, const void *src, unsigned long size)
 {
-	cudaError_t error = cudaGetLastError();	// Reset last error to cudaSuccess
+	cudaError_t error; //= cudaGetLastError();
 
 	if ((error = nv_cudaMemcpyAsync(dst, src, size, cudaMemcpyHostToDevice,
 			pcontext->stream_dma)) != cudaSuccess) {
-		GMM_DPRINT("DtoH (%lu, %p => %p) failed: %s\n", \
-				size, src, dst, cudaGetErrorString(error));
-		//return -1;
+		gprint(ERROR, "DtoH (%lu, %p => %p) failed: %s (%d)\n", \
+				size, src, dst, cudaGetErrorString(error), error);
+		return -1;
 	}
 
 	if (nv_cudaStreamSynchronize(pcontext->stream_dma) != cudaSuccess) {
-		GMM_DPRINT("Sync over DMA stream failed\n");
+		gprint(ERROR, "Sync over DMA stream failed\n");
 		return -1;
 	}
 
@@ -868,43 +868,47 @@ static int gmm_memcpy_htod(void *dst, const void *src, unsigned long size)
 // kernel cannot be synced from host to device or vice versa until the kernel
 // finishes; a block being read in a kernel cannot be synced from host to
 // device until the kernel finishes.
-static void block_sync(struct region *r, int block)
+static int block_sync(struct region *r, int block)
 {
 	int dvalid = r->blocks[block].dev_valid;
 	int svalid = r->blocks[block].swp_valid;
 	unsigned long off, size;
+	int ret = 0;
 
 	// Nothing to sync if both are valid or both are invalid
 	if ((dvalid ^ svalid) == 0)
-		return;
+		return 0;
 	if (!r->dev_addr || !r->swp_addr)
 		panic("block_sync");
+
+	gprint(DEBUG, \
+			"block sync begins: r(%p) block(%d) svalid(%d) dvalid(%d)\n", \
+			r, block, svalid, dvalid);
 
 	// Have to wait until the kernel modifying the region finishes,
 	// otherwise it is possible that the data we read are inconsistent
 	// with what's being written by the kernel.
 	// TODO: will make the modifying flags more fine-grained (block level).
-	//GMM_DPRINT("before sync loop %p (%d)\n", r, atomic_read(&r->writing));
-	while (atomic_read(&r->writing) > 0)
-		;//GMM_DPRINT("in sync loop %p (%d)\n", r, atomic_read(&r->writing));
-	//GMM_DPRINT("after sync loop\n");
+	while (atomic_read(&r->writing) > 0) ;
 
 	off = block * BLOCKSIZE;
 	size = MIN(off + BLOCKSIZE, r->size) - off;
 	if (dvalid && !svalid) {
 		// Sync from device to host swap buffer
-		gmm_memcpy_dtoh(r->swp_addr + off, r->dev_addr + off, size);
-		r->blocks[block].swp_valid = 1;
+		ret = gmm_memcpy_dtoh(r->swp_addr + off, r->dev_addr + off, size);
+		if (!ret)
+			r->blocks[block].swp_valid = 1;
 	}
 	else {
 		// Sync from host swap buffer to device
-		//GMM_DPRINT("xxx\n");
-		while (atomic_read(&r->reading) > 0)
-			;//GMM_DPRINT("in sync loop %p (%d)\n", r, atomic_read(&r->reading));
-		//GMM_DPRINT("yyy\n");
-		gmm_memcpy_htod(r->dev_addr + off, r->swp_addr + off, size);
-		r->blocks[block].dev_valid = 1;
+		while (atomic_read(&r->reading) > 0) ;
+		ret = gmm_memcpy_htod(r->dev_addr + off, r->swp_addr + off, size);
+		if (!ret)
+			r->blocks[block].dev_valid = 1;
 	}
+
+	gprint(DEBUG, "block sync ends\n");
+	return ret;
 }
 
 // Copy a piece of data from $src to (the host swap buffer of) a block in $r.
@@ -915,7 +919,9 @@ static void block_sync(struct region *r, int block)
 // $skipped, if not null, returns whether skipped (1 - skipped; 0 - not skipped)
 #ifdef GMM_CONFIG_HTOD_RADICAL
 // This is an implementation matching the radical version of gmm_htod.
-static void gmm_htod_block(
+// TODO: this is not correct. see the non-radical version for reasons and
+// fix
+static int gmm_htod_block(
 		struct region *r,
 		unsigned long offset,
 		const void *src,
@@ -925,6 +931,7 @@ static void gmm_htod_block(
 		char *skipped)
 {
 	struct block *b = r->blocks + block;
+	int ret = 0;
 
 	// partial modification
 	if ((offset % BLOCKSIZE) || (size < BLOCKSIZE && offset + size < r->size)) {
@@ -942,7 +949,7 @@ static void gmm_htod_block(
 				if (skip) {
 					if (skipped)
 						*skipped = 1;
-					return;
+					return 0;
 				}
 			}
 			if (b->swp_valid || !b->dev_valid) {
@@ -958,8 +965,10 @@ static void gmm_htod_block(
 				// holding the lock of a swp_valid=0,dev_valid=1 block, which
 				// will prevent the evictor, if any, from freeing the device
 				// memory under us.
-				block_sync(r, block);
+				ret = block_sync(r, block);
 				release(&b->lock);
+				if (ret != 0)
+					goto finish;
 				memcpy(r->swp_addr + offset, src, size);
 				b->dev_valid = 0;
 			}
@@ -980,12 +989,14 @@ static void gmm_htod_block(
 		memcpy(r->swp_addr + offset, src, size);
 	}
 
+finish:
 	if (skipped)
 		*skipped = 0;
+	return ret;
 }
 #else
 // This is an implementation matching the conservative version of gmm_htod.
-static void gmm_htod_block(
+static int gmm_htod_block(
 		struct region *r,
 		unsigned long offset,
 		const void *src,
@@ -997,56 +1008,73 @@ static void gmm_htod_block(
 	struct block *b = r->blocks + block;
 	int partial = (offset % BLOCKSIZE) ||
 			(size < BLOCKSIZE && (offset + size) < r->size);
+	int ret = 0;
 
 /*	GMM_DPRINT("gmm_htod_block: r(%p) offset(%lu) src(%p)" \
 			" size(%lu) block(%d) partial(%d)\n", \
 			r, offset, src, size, block, partial);
 */
+	// This `no-locking' case will cause a subtle block sync problem:
+	// Suppose this block is invalid in both swp and dev, then the
+	// following actions will set its swp to valid. Now if the evictor
+	// sees invalid swp before it being set to valid and decides to do
+	// a block sync, it may accidentally sync the data from host to
+	// device, which should never happen during a block eviction. So
+	// the safe action is to only test/change the state of a block while
+	// holding its lock.
+//	if (b->swp_valid || !b->dev_valid) {
+//		// no locking needed
+//		memcpy(r->swp_addr + offset, src, size);
+//		if (!b->swp_valid)
+//			b->swp_valid = 1;
+//		if (b->dev_valid)
+//			b->dev_valid = 0;
+//	}
+//	else {
+
+	while (!try_acquire(&b->lock)) {
+		if (skip) {
+			if (skipped)
+				*skipped = 1;
+			return 0;
+		}
+	}
 	if (b->swp_valid || !b->dev_valid) {
-		// no locking needed
-		memcpy(r->swp_addr + offset, src, size);
 		if (!b->swp_valid)
 			b->swp_valid = 1;
 		if (b->dev_valid)
 			b->dev_valid = 0;
+		release(&b->lock);
+		// this is not thread-safe; otherwise, move memcpy before release
+		memcpy(r->swp_addr + offset, src, size);
 	}
-	else {
-		// locking needed
-		while (!try_acquire(&b->lock)) {
-			if (skip) {
-				if (skipped)
-					*skipped = 1;
-				return;
-			}
-		}
-		if (b->swp_valid || !b->dev_valid) {
-			release(&b->lock);
-			memcpy(r->swp_addr + offset, src, size);
-			if (!b->swp_valid)
-				b->swp_valid = 1;
-			if (b->dev_valid)
+	else { // dev_valid == 1 && swp_valid == 0
+		if (partial) {
+			// XXX: We don't need to pin the device memory because we are
+			// holding the lock of a swp_valid=0,dev_valid=1 block, which
+			// will prevent the evictor, if any, from freeing the device
+			// memory under us.
+			ret = block_sync(r, block);
+			if (!ret)
 				b->dev_valid = 0;
+			release(&b->lock);
+			if (ret != 0)
+				goto finish;
 		}
-		else { // dev_valid == 1 && swp_valid == 0
-			if (partial) {
-				// XXX: We don't need to pin the device memory because we are
-				// holding the lock of a swp_valid=0,dev_valid=1 block, which
-				// will prevent the evictor, if any, from freeing the device
-				// memory under us.
-				block_sync(r, block);
-				release(&b->lock);
-			}
-			else {
-				b->swp_valid = 1;
-				release(&b->lock);
-			}
-			memcpy(r->swp_addr + offset, src, size);
+		else {
+			b->swp_valid = 1;
 			b->dev_valid = 0;
+			release(&b->lock);
 		}
+		memcpy(r->swp_addr + offset, src, size);
 	}
 
+//	}
+
+finish:
 	if (skipped)
 		*skipped = 0;
+	return ret;
 }
 #endif
 
@@ -1062,12 +1090,14 @@ static int gmm_htod_pta(
 {
 	unsigned long off = (unsigned long)(dst - r->swp_addr);
 
+	gprint(DEBUG, "htod_pta\n");
+
 	if (off % sizeof(void *)) {
-		GMM_DPRINT("offset (%lu) not aligned for host to pta memcpy\n", off);
+		gprint(ERROR, "offset (%lu) not aligned for host to pta memcpy\n", off);
 		return -1;
 	}
 	if (count % sizeof(void *)) {
-		GMM_DPRINT("count (%lu) not aligned for host to pta memcpy\n", count);
+		gprint(ERROR, "count (%lu) not aligned for host to pta memcpy\n", count);
 		return -1;
 	}
 
@@ -1100,6 +1130,7 @@ static int gmm_htod(
 	unsigned long off, end;
 	void *s = (void *)src;
 	char *skipped;
+	int ret = 0;
 
 	if (r->flags & HINT_PTARRAY)
 		return gmm_htod_pta(r, dst, src, count);
@@ -1110,7 +1141,7 @@ static int gmm_htod(
 	ilast = BLOCKIDX(end - 1);
 	skipped = (char *)malloc(ilast - ifirst + 1);
 	if (!skipped) {
-		GMM_DPRINT("malloc failed for skipped[]: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for skipped[]: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -1145,7 +1176,10 @@ static int gmm_htod(
 	// records whether a block was skipped.
 	for (iblock = ifirst; iblock <= ilast; iblock++) {
 		unsigned long size = MIN(BLOCKUP(off), end) - off;
-		gmm_htod_block(r, off, s, size, iblock, 1, skipped + (iblock - ifirst));
+		ret = gmm_htod_block(r, off, s, size, iblock, 1,
+				skipped + (iblock - ifirst));
+		if (ret != 0)
+			goto finish;
 		s += size;
 		off += size;
 	}
@@ -1155,14 +1189,18 @@ static int gmm_htod(
 	s = (void *)src;
 	for (iblock = ifirst; iblock <= ilast; iblock++) {
 		unsigned long size = MIN(BLOCKUP(off), end) - off;
-		if (skipped[iblock - ifirst])
-			gmm_htod_block(r, off, s, size, iblock, 0, NULL);
+		if (skipped[iblock - ifirst]) {
+			ret = gmm_htod_block(r, off, s, size, iblock, 0, NULL);
+			if (ret != 0)
+				goto finish;
+		}
 		s += size;
 		off += size;
 	}
 
+finish:
 	free(skipped);
-	return 0;
+	return ret;
 }
 #else
 // The conservative version
@@ -1176,6 +1214,10 @@ static int gmm_htod(
 	int ifirst, ilast, iblock;
 	char *skipped;
 	void *s = (void *)src;
+	int ret = 0;
+
+	gprint(DEBUG, "htod: r(%p %p %ld) dst(%p) src(%p) count(%lu)\n", \
+			r, r->swp_addr, r->size, dst, src, count);
 
 	if (r->flags & HINT_PTARRAY)
 		return gmm_htod_pta(r, dst, src, count);
@@ -1184,9 +1226,9 @@ static int gmm_htod(
 	end = off + count;
 	ifirst = BLOCKIDX(off);
 	ilast = BLOCKIDX(end - 1);
-	skipped = (char *)malloc(ilast - ifirst + 1);
+	skipped = (char *)calloc(ilast - ifirst + 1, sizeof(char));
 	if (!skipped) {
-		GMM_DPRINT("malloc failed for skipped[]: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for skipped[]: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -1195,7 +1237,10 @@ static int gmm_htod(
 	// skipped[] records whether each block was skipped.
 	for (iblock = ifirst; iblock <= ilast; iblock++) {
 		size = MIN(BLOCKUP(off), end) - off;
-		gmm_htod_block(r, off, s, size, iblock, 1, skipped + (iblock - ifirst));
+		ret = gmm_htod_block(r, off, s, size, iblock, 1,
+				skipped + (iblock - ifirst));
+		if (ret != 0)
+			goto finish;
 		s += size;
 		off += size;
 	}
@@ -1205,14 +1250,18 @@ static int gmm_htod(
 	s = (void *)src;
 	for (iblock = ifirst; iblock <= ilast; iblock++) {
 		size = MIN(BLOCKUP(off), end) - off;
-		if (skipped[iblock - ifirst])
-			gmm_htod_block(r, off, s, size, iblock, 0, NULL);
+		if (skipped[iblock - ifirst]) {
+			ret = gmm_htod_block(r, off, s, size, iblock, 0, NULL);
+			if (ret != 0)
+				goto finish;
+		}
 		s += size;
 		off += size;
 	}
 
+finish:
 	free(skipped);
-	return 0;
+	return ret;
 }
 #endif
 
@@ -1224,13 +1273,17 @@ static int gmm_memset_pta(struct region *r, void *dst, int value, size_t count)
 	return 0;
 }
 
-// TODO: improve performance
+// TODO: this is a workaround implementation.
 static int gmm_memset(struct region *r, void *dst, int value, size_t count)
 {
 	unsigned long off, end, size;
 	int ifirst, ilast, iblock;
 	char *skipped;
+	int ret = 0;
 	void *s;
+
+	gprint(DEBUG, "memset: r(%p %p %ld) dst(%p) value(%d) count(%lu)\n", \
+			r, r->swp_addr, r->size, dst, value, count);
 
 	if (r->flags & HINT_PTARRAY)
 		return gmm_memset_pta(r, dst, value, count);
@@ -1238,7 +1291,7 @@ static int gmm_memset(struct region *r, void *dst, int value, size_t count)
 	// The temporary source buffer holding %value's
 	s = malloc(BLOCKSIZE);
 	if (!s) {
-		GMM_DPRINT("malloc failed for memset source buffer: %s\n", \
+		gprint(FATAL, "malloc failed for memset temp buffer: %s\n", \
 				strerror(errno));
 		return -1;
 	}
@@ -1250,17 +1303,20 @@ static int gmm_memset(struct region *r, void *dst, int value, size_t count)
 	ilast = BLOCKIDX(end - 1);
 	skipped = (char *)malloc(ilast - ifirst + 1);
 	if (!skipped) {
-		GMM_DPRINT("malloc failed for skipped[]: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for skipped[]: %s\n", strerror(errno));
 		free(s);
 		return -1;
 	}
 
 	// Copy data block by block, skipping blocks that are not available
-	// for immediate operation (very likely due to being evicted).
+	// for immediate operation (very likely because it's being evicted).
 	// skipped[] records whether each block was skipped.
 	for (iblock = ifirst; iblock <= ilast; iblock++) {
 		size = MIN(BLOCKUP(off), end) - off;
-		gmm_htod_block(r, off, s, size, iblock, 1, skipped + (iblock - ifirst));
+		ret = gmm_htod_block(r, off, s, size, iblock, 1,
+				skipped + (iblock - ifirst));
+		if (ret != 0)
+			goto finish;
 		off += size;
 	}
 
@@ -1268,14 +1324,18 @@ static int gmm_memset(struct region *r, void *dst, int value, size_t count)
 	off = (unsigned long)(dst - r->swp_addr);
 	for (iblock = ifirst; iblock <= ilast; iblock++) {
 		size = MIN(BLOCKUP(off), end) - off;
-		if (skipped[iblock - ifirst])
-			gmm_htod_block(r, off, s, size, iblock, 0, NULL);
+		if (skipped[iblock - ifirst]) {
+			ret = gmm_htod_block(r, off, s, size, iblock, 0, NULL);
+			if (ret != 0)
+				goto finish;
+		}
 		off += size;
 	}
 
+finish:
 	free(skipped);
 	free(s);
-	return 0;
+	return ret;
 }
 
 static int gmm_dtoh_block(
@@ -1288,6 +1348,7 @@ static int gmm_dtoh_block(
 		char *skipped)
 {
 	struct block *b = r->blocks + iblock;
+	int ret = 0;
 
 /*	GMM_DPRINT("gmm_dtoh_block: r(%p) dst(%p) off(%lu)" \
 			" size(%lu) block(%d) swp_valid(%d) dev_valid(%d)\n", \
@@ -1325,15 +1386,17 @@ static int gmm_dtoh_block(
 		// We don't need to pin the device memory because we are holding the
 		// lock of a swp_valid=0,dev_valid=1 block, which will prevent the
 		// evictor, if any, from freeing the device memory under us.
-		block_sync(r, iblock);
+		ret = block_sync(r, iblock);
 		release(&b->lock);
+		if (ret != 0)
+			goto finish;
 		memcpy(dst, r->swp_addr + off, size);
 	}
 
+finish:
 	if (skipped)
 		*skipped = 0;
-
-	return 0;
+	return ret;
 }
 
 static int gmm_dtoh_pta(
@@ -1345,11 +1408,11 @@ static int gmm_dtoh_pta(
 	unsigned long off = (unsigned long)(src - r->swp_addr);
 
 	if (off % sizeof(void *)) {
-		GMM_DPRINT("offset (%lu) not aligned for pta-to-host memcpy\n", off);
+		gprint(ERROR, "offset (%lu) not aligned for pta-to-host memcpy\n", off);
 		return -1;
 	}
 	if (count % sizeof(void *)) {
-		GMM_DPRINT("count (%lu) not aligned for pta-to-host memcpy\n", count);
+		gprint(ERROR, "count (%lu) not aligned for pta-to-host memcpy\n", count);
 		return -1;
 	}
 
@@ -1371,13 +1434,17 @@ static int gmm_dtoh(
 	int ifirst = BLOCKIDX(off), iblock;
 	void *d = dst;
 	char *skipped;
+	int ret = 0;
+
+	gprint(DEBUG, "dtoh: r(%p %p %ld) dst(%p) src(%p) count(%lu)\n", \
+			r, r->swp_addr, r->size, dst, src, count);
 
 	if (r->flags & HINT_PTARRAY)
 		return gmm_dtoh_pta(r, dst, src, count);
 
 	skipped = (char *)malloc(BLOCKIDX(end - 1) - ifirst + 1);
 	if (!skipped) {
-		GMM_DPRINT("malloc failed for skipped[]: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for skipped[]: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -1385,7 +1452,10 @@ static int gmm_dtoh(
 	iblock = ifirst;
 	while (off < end) {
 		size = MIN(BLOCKUP(off), end) - off;
-		gmm_dtoh_block(r, d, off, size, iblock, 1, skipped + iblock - ifirst);
+		ret = gmm_dtoh_block(r, d, off, size, iblock, 1,
+				skipped + iblock - ifirst);
+		if (ret != 0)
+			goto finish;
 		d += size;
 		off += size;
 		iblock++;
@@ -1397,18 +1467,22 @@ static int gmm_dtoh(
 	d = dst;
 	while (off < end) {
 		size = MIN(BLOCKUP(off), end) - off;
-		if (skipped[iblock - ifirst])
-			gmm_dtoh_block(r, d, off, size, iblock, 0, NULL);
+		if (skipped[iblock - ifirst]) {
+			ret = gmm_dtoh_block(r, d, off, size, iblock, 0, NULL);
+			if (ret != 0)
+				goto finish;
+		}
 		d += size;
 		off += size;
 		iblock++;
 	}
 
+finish:
 	free(skipped);
-	return 0;
+	return ret;
 }
 
-// TODO: this is only a toy implementation. we should copy data
+// TODO: this is a toy implementation; data should be copied
 // directly from rs to rd
 static int gmm_dtod(
 		struct region *rd,
@@ -1420,28 +1494,29 @@ static int gmm_dtod(
 	int ret = 0;
 	void *temp;
 
-	//GMM_DPRINT("gmm_dtod begins\n");
+	gprint(DEBUG, "dtod: rd(%p %p %ld) rs(%p %p %ld) " \
+			"dst(%p) src(%p) count(%lu)\n", \
+			rd, rd->swp_addr, rd->size, rs, rs->swp_addr, rs->size, \
+			dst, src, count);
 
 	temp = malloc(count);
 	if (!temp) {
-		GMM_DPRINT("malloc failed for temp dtod buffer: %s\n", \
+		gprint(FATAL, "malloc failed for temp dtod buffer: %s\n", \
 				strerror(errno));
 		return -1;
 	}
 
 	if (gmm_dtoh(rs, temp, src, count) < 0) {
-		GMM_DPRINT("failed to copy data to temp dtod buffer\n");
+		gprint(ERROR, "failed to copy data to temp dtod buffer\n");
 		free(temp);
 		return -1;
 	}
-	//GMM_DPRINT("gmm_dtoh finished\n");
 
 	if (gmm_htod(rd, dst, temp, count) < 0) {
-		GMM_DPRINT("failed to copy data from temp dtod buffer\n");
+		gprint(ERROR, "failed to copy data from temp dtod buffer\n");
 		free(temp);
 		return -1;
 	}
-	//GMM_DPRINT("gmm_htod finished\n");
 
 	free(temp);
 	return ret;
@@ -1514,9 +1589,9 @@ int region_evict(struct region *r)
 {
 	int nblocks = NRBLOCKS(r->size);
 	char *skipped;
-	int i;
+	int i, ret = 0;
 
-	GMM_DPRINT("evicting region %p\n", r);
+	gprint(INFO, "evicting region %p\n", r);
 	//gmm_print_region(r);
 
 	if (!r->dev_addr)
@@ -1524,20 +1599,22 @@ int region_evict(struct region *r)
 	if (region_pinned(r))
 		panic("evicting a pinned region");
 
-	skipped = (char *)malloc(nblocks);
+	skipped = (char *)calloc(nblocks, sizeof(char));
 	if (!skipped) {
-		GMM_DPRINT("malloc failed for skipped[]: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for skipped[]: %s\n", strerror(errno));
 		return -1;
 	}
 
 	// First round
 	for (i = 0; i < nblocks; i++) {
 		if (r->state == STATE_FREEING)
-			goto finish;
+			goto success;
 		if (try_acquire(&r->blocks[i].lock)) {
 			if (!r->blocks[i].swp_valid)
-				block_sync(r, i);
+				ret = block_sync(r, i);
 			release(&r->blocks[i].lock);
+			if (ret != 0)
+				goto finish;	// this is problematic if r is freeing
 			skipped[i] = 0;
 		}
 		else
@@ -1547,19 +1624,23 @@ int region_evict(struct region *r)
 	// Second round
 	for (i = 0; i < nblocks; i++) {
 		if (r->state == STATE_FREEING)
-			goto finish;
+			goto success;
 		if (skipped[i]) {
 			acquire(&r->blocks[i].lock);
 			if (!r->blocks[i].swp_valid)
-				block_sync(r, i);
+				ret = block_sync(r, i);
 			release(&r->blocks[i].lock);
+			if (ret != 0)
+				goto finish;	// this is problematic if r is freeing
 		}
 	}
 
-finish:
+success:
 	list_attached_del(pcontext, r);
-	nv_cudaFree(r->dev_addr);
-	r->dev_addr = NULL;
+	if (r->dev_addr) {
+		nv_cudaFree(r->dev_addr);
+		r->dev_addr = NULL;
+	}
 	latomic_sub(&pcontext->size_attached, r->size);
 	update_attached(-r->size);
 	update_detachable(-r->size);
@@ -1570,13 +1651,18 @@ finish:
 			free(r->swp_addr);
 			r->swp_addr = NULL;
 		}
+		r->state = STATE_ZOMBIE;
 	}
-	r->state = STATE_DETACHED;
+	else
+		r->state = STATE_DETACHED;
 	release(&r->lock);
 
-	//GMM_DPRINT("evicted region %p\n", r);
+	gprint(INFO, "region evicted\n");
+	//gmm_print_region(r);
+
+finish:
 	free(skipped);
-	return 0;
+	return ret;
 }
 
 // NOTE: Client %client should have been pinned when this function
@@ -1584,9 +1670,9 @@ finish:
 int remote_victim_evict(int client, long size_needed)
 {
 	int ret;
-	//GMM_DPRINT("evicting remote victim in client %d\n", client);
+	gprint(DEBUG, "remote eviction in client %d\n", client);
 	ret = msq_send_req_evict(client, size_needed, 1);
-	//GMM_DPRINT("remote victim eviction returned: %d\n", ret);
+	gprint(DEBUG, "remote eviction returned: %d\n", ret);
 	client_unpin(client);
 	return ret;
 }
@@ -1600,6 +1686,7 @@ int local_victim_evict(long size_needed)
 	struct region *r;
 	int ret;
 
+	gprint(DEBUG, "local eviction: %ld bytes\n", size_needed);
 	INIT_LIST_HEAD(&victims);
 
 	ret = victim_select(size_needed, NULL, 0, 1, &victims);
@@ -1620,8 +1707,6 @@ int local_victim_evict(long size_needed)
 // may own some evictable region.
 int victim_evict(struct victim *victim, long size_needed)
 {
-	//GMM_DPRINT("evicting victim r(%p) client(%d)\n", victim->r, victim->client);
-
 	if (victim->r)
 		return region_evict(victim->r);
 	else if (victim->client != -1)
@@ -1641,7 +1726,7 @@ static int gmm_evict(long size_needed, struct region **excls, int nexcl)
 	struct victim *v;
 	int ret = 0;
 
-	//GMM_DPRINT("evicting for %ld bytes\n", size_needed);
+	gprint(DEBUG, "evicting for %ld bytes\n", size_needed);
 	INIT_LIST_HEAD(&victims);
 
 	do {
@@ -1669,6 +1754,7 @@ static int gmm_evict(long size_needed, struct region **excls, int nexcl)
 		}
 	} while (memsize_free() < size_needed);
 
+	gprint(DEBUG, "eviction finished\n");
 	return 0;
 
 fail_evict:
@@ -1687,6 +1773,7 @@ fail_evict:
 		free(v);
 	}
 
+	gprint(DEBUG, "eviction failed\n");
 	return ret;
 }
 
@@ -1697,19 +1784,27 @@ static int region_attach(
 		struct region **excls,
 		int nexcl)
 {
+	cudaError_t cret;
 	int ret;
 
-	//GMM_DPRINT("attaching region %p\n", r);
+	gprint(DEBUG, "attaching region %p\n", r);
 
 	if (r->state != STATE_DETACHED) {
-		GMM_DPRINT("nothing to attach\n");
+		gprint(ERROR, "nothing to attach\n");
 		return -1;
 	}
 
 	// Attach if current free memory space is larger than region size.
-	if (r->size <= memsize_free() &&
-		nv_cudaMalloc(&r->dev_addr, r->size) == cudaSuccess)
-		goto attach_success;
+	if (r->size <= memsize_free()) {
+		if ((cret = nv_cudaMalloc(&r->dev_addr, r->size)) == cudaSuccess)
+			goto attach_success;
+		else {
+			gprint(DEBUG, "nv_cudaMalloc failed: %s (%d)\n", \
+					cudaGetErrorString(cret), cret);
+			if (cret == cudaErrorLaunchFailure)
+				return -1;
+		}
+	}
 
 	// Evict some device memory.
 	ret = gmm_evict(r->size, excls, nexcl);
@@ -1717,9 +1812,14 @@ static int region_attach(
 		return ret;
 
 	// Try to attach again.
-	if (nv_cudaMalloc(&r->dev_addr, r->size) != cudaSuccess) {
+	if ((cret = nv_cudaMalloc(&r->dev_addr, r->size)) != cudaSuccess) {
 		r->dev_addr = NULL;
-		return 1;
+		gprint(DEBUG, "nv_cudaMalloc failed: %s (%d)\n", \
+				cudaGetErrorString(cret), cret);
+		if (cret == cudaErrorLaunchFailure)
+			return -1;
+		else
+			return 1;
 	}
 
 attach_success:
@@ -1733,25 +1833,27 @@ attach_success:
 	r->state = STATE_ATTACHED;
 	list_attached_add(pcontext, r);
 
+	gprint(DEBUG, "region attached\n");
 	return 0;
 }
 
 // Load a region to device memory.
-// excls[0:nexcl) are regions that should not be evicted when
-// evictions need to happen during the loading.
+// excls[0:nexcl) are regions that should not be evicted
+// during the loading.
 static int region_load(
 		struct region *r,
 		int pin,
 		struct region **excls,
 		int nexcl)
 {
-	int i, ret;
+	int i, ret = 0;
 
-	//GMM_DPRINT("loading region %p\n", r);
+	gprint(DEBUG, "loading region r(%p %p %lu %d %d)\n", \
+			r, r->swp_addr, r->size, r->flags, r->state);
 	//gmm_print_region(r);
 
-	if (r->state == STATE_EVICTING || r->state == STATE_FREEING) {
-		GMM_DPRINT("should not see a evicting/freeing region during loading\n");
+	if (r->state == STATE_EVICTING) {
+		gprint(ERROR, "should not see an evicting region\n");
 		return -1;
 	}
 
@@ -1773,11 +1875,14 @@ static int region_load(
 		for (i = 0; i < NRBLOCKS(r->size); i++) {
 			acquire(&r->blocks[i].lock);	// Though this is useless
 			if (!r->blocks[i].dev_valid)
-				block_sync(r, i);
+				ret = block_sync(r, i);
 			release(&r->blocks[i].lock);
+			if (ret != 0)
+				return ret;
 		}
 	}
 
+	gprint(DEBUG, "loaded region\n");
 	return 0;
 }
 
@@ -1797,17 +1902,21 @@ static int gmm_load(struct region **rgns, int n)
 	if (n < 0 || (n > 0 && !rgns))
 		return -1;
 
-	pinned = (char *)malloc(n);
+	gprint(DEBUG, "gmm_load begins: %d\n", n);
+
+	pinned = (char *)calloc(n, sizeof(char));
 	if (!pinned) {
-		GMM_DPRINT("malloc failed for pinned array: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for pinned array: %s\n", strerror(errno));
 		return -1;
 	}
-	memset(pinned, 0, n);
 
 	for (i = 0; i < n; i++) {
-		if (rgns[i]->state == STATE_FREEING) {
-			GMM_DPRINT("warning: not loading freed region\n");
-			continue;
+		if (rgns[i]->state == STATE_FREEING || rgns[i]->state == STATE_ZOMBIE) {
+			gprint(ERROR, "cannot load a freed region r(%p %p %ld %d %d)\n", \
+					rgns[i], rgns[i]->swp_addr, rgns[i]->size, \
+					rgns[i]->flags, rgns[i]->state);
+			ret = -1;
+			goto fail;
 		}
 		// NOTE: In current design, this locking is redundant
 		acquire(&rgns[i]->lock);
@@ -1818,6 +1927,7 @@ static int gmm_load(struct region **rgns, int n)
 		pinned[i] = 1;
 	}
 
+	gprint(DEBUG, "gmm_load finished\n");
 	free(pinned);
 	return 0;
 
@@ -1826,6 +1936,7 @@ fail:
 		if (pinned[i])
 			region_unpin(rgns[i]);
 	free(pinned);
+	gprint(DEBUG, "gmm_load failed\n");
 	return ret;
 }
 
@@ -1839,12 +1950,15 @@ void CUDART_CB gmm_kernel_callback(
 {
 	struct kcb *pcb = (struct kcb *)data;
 	int i;
-	GMM_DPRINT("gmm_kernel_callback: %s\n", status == cudaSuccess ? "success" : "failure");
+	if (status != cudaSuccess)
+		gprint(ERROR, "kernel failed: %d\n", status);
+	else
+		gprint(DEBUG, "kernel succeeded\n");
 	for (i = 0; i < pcb->nrgns; i++) {
 		if (pcb->flags[i] & HINT_WRITE)
-			atomic_dec(&(pcb->rgns[i]->writing));
+			atomic_dec(&pcb->rgns[i]->writing);
 		if (pcb->flags[i] & HINT_READ)
-			atomic_dec(&(pcb->rgns[i]->reading));
+			atomic_dec(&pcb->rgns[i]->reading);
 		region_unpin(pcb->rgns[i]);
 	}
 	free(pcb);
@@ -1854,17 +1968,18 @@ void CUDART_CB gmm_kernel_callback(
 // finish event and unpin related regions accordingly.
 static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 {
+	cudaError_t cret;
 	struct kcb *pcb;
 	int i;
 
 	if (nrgns > NREFS) {
-		GMM_DPRINT("too many regions\n");
+		gprint(ERROR, "too many regions\n");
 		return -1;
 	}
 
 	pcb = (struct kcb *)malloc(sizeof(*pcb));
 	if (!pcb) {
-		GMM_DPRINT("malloc failed for kcb: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for kcb: %s\n", strerror(errno));
 		return -1;
 	}
 	if (nrgns > 0)
@@ -1872,24 +1987,28 @@ static int gmm_launch(const char *entry, struct region **rgns, int nrgns)
 	for (i = 0; i < nrgns; i++) {
 		pcb->flags[i] = rgns[i]->rwhint.flags;
 		if (pcb->flags[i] & HINT_WRITE)
-			atomic_inc(&(rgns[i]->writing));
+			atomic_inc(&rgns[i]->writing);
 		if (pcb->flags[i] & HINT_READ)
-			atomic_inc(&(rgns[i]->reading));
+			atomic_inc(&rgns[i]->reading);
 	}
 	pcb->nrgns = nrgns;
 
-	if (nv_cudaLaunch(entry) != cudaSuccess) {
+	if ((cret = nv_cudaLaunch(entry)) != cudaSuccess) {
 		for (i = 0; i < nrgns; i++) {
 			if (pcb->flags[i] & HINT_WRITE)
-				atomic_dec(&(pcb->rgns[i]->writing));
+				atomic_dec(&pcb->rgns[i]->writing);
 			if (pcb->flags[i] & HINT_READ)
-				atomic_dec(&(pcb->rgns[i]->reading));
+				atomic_dec(&pcb->rgns[i]->reading);
 		}
 		free(pcb);
+		gprint(ERROR, "nv_cudaLaunch failed: %s (%d)\n", \
+				cudaGetErrorString(cret), cret);
 		return -1;
 	}
 	nv_cudaStreamAddCallback(stream_issue, gmm_kernel_callback, (void *)pcb, 0);
 
-	GMM_DPRINT("kernel launched\n");
+	// TODO: update this client's position in global LRU client list
+
+	gprint(DEBUG, "kernel launched\n");
 	return 0;
 }

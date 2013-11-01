@@ -59,31 +59,31 @@ int client_attach()
 
 	sem_launch = sem_open(GMM_SEM_LAUNCH, 0);
 	if (sem_launch == SEM_FAILED) {
-		GMM_DPRINT("unable to open launch semaphore: %s\n", strerror(errno));
+		gprint(FATAL, "unable to open launch semaphore: %s\n", strerror(errno));
 		return -1;
 	}
 
 	shmfd = shm_open(GMM_SHM_GLOBAL, O_RDWR, 0);
 	if (shmfd == -1) {
-		GMM_DPRINT("unable to open shared memory: %s\n", strerror(errno));
+		gprint(FATAL, "unable to open shared memory: %s\n", strerror(errno));
 		goto fail_shm;
 	}
 
 	pglobal = (struct gmm_global *)mmap(NULL, sizeof(*pglobal),
 			PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
 	if (pglobal == MAP_FAILED) {
-		GMM_DPRINT("failed to mmap shared memory: %s\n", strerror(errno));
+		gprint(FATAL, "failed to mmap shared memory: %s\n", strerror(errno));
 		goto fail_mmap;
 	}
 
 	if (msq_init() < 0) {
-		GMM_DPRINT("message queue init failed\n");
+		gprint(FATAL, "message queue init failed\n");
 		goto fail_msq;
 	}
 
 	cid = client_alloc();
 	if (cid == -1) {
-		GMM_DPRINT("failed to allocate client\n");
+		gprint(FATAL, "failed to allocate client\n");
 		goto fail_client;
 	}
 
@@ -150,6 +150,7 @@ void launch_wait()
 	do {
 		ret = sem_wait(sem_launch);
 	} while (ret == -1 && errno == EINTR);
+	//gprint(DEBUG, "sem_wait %d\n", ret);
 }
 
 void launch_signal()

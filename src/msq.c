@@ -27,13 +27,13 @@ int msq_send(int client, const struct msg *msg)
 	sprintf(qname, "/gmm_cli_%d", cidtopid(client));
 	qid = mq_open(qname, O_WRONLY);
 	if (qid == (mqd_t) -1) {
-		GMM_DPRINT("failed to open message queue in process %d: %s\n", \
+		gprint(FATAL, "failed to open message queue in process %d: %s\n", \
 				cidtopid(client), strerror(errno));
 		return -1;
 	}
 
 	if (mq_send(qid, (const char *)msg, msg->size, 0) == -1) {
-		GMM_DPRINT("failed to send a message: %s\n", strerror(errno));
+		gprint(FATAL, "failed to send a message: %s\n", strerror(errno));
 		mq_close(qid);
 		return -1;
 	}
@@ -91,11 +91,11 @@ void handle_req_evict(struct msg_req *msg)
 
 	//GMM_DPRINT("handle_req_evict: from(%d) size(%d) block(%d)\n", msg->from, msg->size, msg->block);
 	if (msg->size != sizeof(*msg)) {
-		GMM_DPRINT("message size unmatches size of msg_req\n");
+		gprint(FATAL, "message size unmatches size of msg_req\n");
 		return;
 	}
 	if (msg->from == getcid()) {
-		GMM_DPRINT("message from self\n");
+		gprint(FATAL, "message from self\n");
 		return;
 	}
 
@@ -109,11 +109,11 @@ void handle_rep_ack(struct msg_rep *msg)
 {
 	//GMM_DPRINT("handle_rep_ack: from(%d) ret(%d)\n", msg->from, msg->ret);
 	if (msg->size != sizeof(*msg)) {
-		GMM_DPRINT("message size unmatches size of msg_rep\n");
+		gprint(FATAL, "message size unmatches size of msg_rep\n");
 		return;
 	}
 	if (msg->from == getcid()) {
-		GMM_DPRINT("message from self\n");
+		gprint(FATAL, "message from self\n");
 		return;
 	}
 
@@ -132,13 +132,13 @@ void *thread_msq_listener(void *arg)
 	ssize_t msgsz;
 
 	if (mq_getattr(mqid, &qattr) == -1) {
-		GMM_DPRINT("failed to get msq attr: %s\n", strerror(errno));
+		gprint(FATAL, "failed to get msq attr: %s\n", strerror(errno));
 		pthread_exit(NULL);
 	}
 
 	msgbuf  = (char *)malloc(qattr.mq_msgsize + 1);
 	if (!msgbuf) {
-		GMM_DPRINT("malloc failed for msgbuf: %s\n", strerror(errno));
+		gprint(FATAL, "malloc failed for msgbuf: %s\n", strerror(errno));
 		pthread_exit(NULL);
 	}
 
@@ -148,17 +148,17 @@ void *thread_msq_listener(void *arg)
 			if (errno == EINTR)
 				continue;
 			else if (errno == EBADF) {
-				GMM_DPRINT("message queue closed; msq_listener exiting\n");
+				gprint(INFO, "message queue closed; msq_listener exiting\n");
 				break;
 			}
 			else {
-				GMM_DPRINT("error in mq_receive: %s\n", strerror(errno));
-				GMM_DPRINT("mq_listener exiting\n");
+				gprint(INFO, "error in mq_receive: %s\n", strerror(errno));
+				gprint(INFO, "mq_listener exiting\n");
 				break;
 			}
 		}
 		else if (msgsz != ((struct msg *)msgbuf)->size) {
-			GMM_DPRINT("bytes received (%ld) unmatch message size (%d)\n", \
+			gprint(INFO, "bytes received (%ld) unmatch message size (%d)\n", \
 					msgsz, ((struct msg *)msgbuf)->size);
 			continue;
 		}
@@ -171,7 +171,7 @@ void *thread_msq_listener(void *arg)
 			handle_rep_ack((struct msg_rep *)msgbuf);
 			break;
 		default:
-			GMM_DPRINT("unknown message type (%d)\n", \
+			gprint(FATAL, "unknown message type (%d)\n", \
 					((struct msg *)msgbuf)->type);
 			break;
 		}
@@ -186,14 +186,14 @@ int msq_init()
 	char qname[32];
 
 	if (mqid != (mqd_t)-1) {
-		GMM_DPRINT("msq already initialized\n");
+		gprint(FATAL, "msq already initialized\n");
 		return -1;
 	}
 
 	sprintf(qname, "/gmm_cli_%d", gettid());
 	mqid = mq_open(qname, O_RDONLY | O_CREAT | O_EXCL, 0622, NULL);
 	if (mqid == (mqd_t) -1) {
-		GMM_DPRINT("failed to create message queue: %s\n", strerror(errno));
+		gprint(FATAL, "failed to create message queue: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -201,7 +201,7 @@ int msq_init()
 	pthread_cond_init(&cond_ack, NULL);
 
 	if (pthread_create(&tid_msq, NULL, thread_msq_listener, NULL) != 0) {
-		GMM_DPRINT("failed to create msq listener thread\n");
+		gprint(FATAL, "failed to create msq listener thread\n");
 		pthread_cond_destroy(&cond_ack);
 		pthread_mutex_destroy(&mutx_ack);
 		mq_close(mqid);

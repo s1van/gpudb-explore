@@ -1,8 +1,6 @@
-# Print GMM debug info
-ENABLE_DEBUG = 1
-
-# Print GMM profile info
-ENABLE_PROFILE = 1
+# Printing flags
+USE_PRINT_BUFFER = 0
+PRINT_LEVEL = 4
 
 GMM_CONFIGS :=
 
@@ -10,7 +8,7 @@ GMM_CONFIGS :=
 #GMM_CONFIGS += -DGMM_RW
 
 # Copy on write
-GMM_CONFIGS += -DGMM_CONFIG_COW
+#GMM_CONFIGS += -DGMM_CONFIG_COW
 
 # Use the radical version of HtoD?
 #GMM_CONFIGS += -DGMM_CONFIG_HTOD_RADICAL
