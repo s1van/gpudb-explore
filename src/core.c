@@ -259,8 +259,8 @@ cudaError_t gmm_cudaFree(void *devPtr)
 
 	if (gmm_free(r) < 0)
 		return cudaErrorUnknown;
-	else
-		return cudaSuccess;
+
+	return cudaSuccess;
 }
 
 cudaError_t gmm_cudaMemcpyHtoD(
